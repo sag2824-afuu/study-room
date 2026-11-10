@@ -98,3 +98,28 @@ button.off { background: #f3dcd6; border-color: #e0b1a5; color: #a24a36; }
 .tablecard .trow span { flex: 1; }
 .tablecard button { padding: 3px 12px; }
 @media (pointer: coarse) { #prompt { left: auto; right: 10px; transform: none; } }
+
+header button { white-space: nowrap; }
+.zone { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+@media (max-width: 600px) {
+  header { gap: 6px; padding: 0 8px; height: 44px; }
+  header .tt, header .lbl { display: none; }
+  header .spacer { display: none; }
+  .zone { flex: 1; font-size: 12px; padding: 3px 8px; }
+  header button { font-size: 13px; padding: 4px 8px; }
+  #dpad { width: 114px; height: 114px; left: 8px; bottom: 8px; opacity: .85; }
+  #dpad button { width: 38px; height: 38px; font-size: 14px; border-radius: 10px; }
+  #dpad .up, #dpad .down { left: 38px; } #dpad .left, #dpad .right { top: 38px; }
+  .tablecard { min-width: 0; font-size: 13px; }
+  .bubble { font-size: 11px; }
+}
+
+.settings { width: min(440px, 94vw); max-height: 92vh; overflow-y: auto; }
+.settings h1 { font-size: 20px; }
+.settings section { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid #eadfcd; }
+.settings select { font: inherit; padding: 6px 8px; border: 1px solid #c9b79f; border-radius: 8px; background: #fff; max-width: 100%; }
+.settings .row2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.meter { height: 10px; border-radius: 999px; background: #eee3d1; overflow: hidden; }
+#micLevel { height: 100%; width: 0%; background: linear-gradient(90deg, #5bbf6a, #e8c63a 75%, #e05a5a); transition: width .05s; }
+#camPreview { width: 100%; max-height: 200px; object-fit: cover; border-radius: 10px; background: #111; transform: scaleX(-1); }
+#unlock { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5; font-size: 18px; padding: 12px 20px; background: #d9773b; color: #fff; border-color: #c4642a; box-shadow: 0 4px 16px rgba(0,0,0,.4); }

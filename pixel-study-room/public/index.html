@@ -26,9 +26,10 @@
 
   <div id="app" hidden>
     <header>
-      <span class="title">📚 像素自習室</span>
+      <span class="title">📚<span class="tt"> 像素自習室</span></span>
       <span id="zone" class="zone"></span>
       <span class="spacer"></span>
+      <button id="settingsBtn" title="裝置設定與測試">⚙️<span class="lbl"> 裝置設定</span></button>
       <button id="camBtn" title="總開關：停用後任何情況都不會開鏡頭">📷 鏡頭：待命</button>
       <button id="micBtn" title="總開關：停用後任何情況都不會開麥克風">🎤 麥克風：待命</button>
     </header>
@@ -44,6 +45,7 @@
         </div>
         <div id="bubbles"></div>
         <div id="prompt"></div>
+        <button id="unlock" hidden>🔊 點這裡開啟聲音</button>
         <div id="help">方向鍵／WASD 移動・Enter 聊天</div>
       </section>
       <aside>
@@ -75,6 +77,28 @@
         </div>
       </aside>
     </main>
+  </div>
+
+  <div id="settings" class="overlay" hidden>
+    <div class="card settings">
+      <h1>⚙️ 裝置設定與測試</h1>
+      <section>
+        <label>🎤 麥克風（輸入）<select id="selMic"></select></label>
+        <div class="meter"><div id="micLevel"></div></div>
+        <div class="row2"><button id="micTestBtn">🎤 開始測試麥克風</button><span id="micHint" class="hint">對著麥克風說話，綠色長條會跳動</span></div>
+      </section>
+      <section>
+        <label id="spkRow">🔊 喇叭／耳機（輸出）<select id="selSpk"></select></label>
+        <p id="spkNote" class="hint" hidden>🔊 這個瀏覽器不能在網頁裡選擇輸出裝置，會使用系統目前的喇叭或耳機；要切換請到系統的音量設定。</p>
+        <div class="row2"><button id="spkTestBtn">🔊 播放測試音</button><span id="spkHint" class="hint">確認喇叭有聲音</span></div>
+      </section>
+      <section>
+        <label>📷 鏡頭<select id="selCam"></select></label>
+        <video id="camPreview" autoplay playsinline muted hidden></video>
+        <div class="row2"><button id="camTestBtn">📷 預覽鏡頭</button><span id="camHint" class="hint"></span></div>
+      </section>
+      <button id="settingsClose" class="primary">完成</button>
+    </div>
   </div>
 
   <div id="offline" class="overlay" hidden><div class="card"><p>連線中斷，正在重新連線…</p></div></div>

@@ -360,7 +360,8 @@
       const v = p.video;
       if (e.streams && e.streams[0]) { if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0]; }
       else { if (!v.srcObject) v.srcObject = new MediaStream(); v.srcObject.addTrack(e.track); }
-      v.play().catch(() => {});
+      applySink(v);
+      v.play().catch(showUnlock);
     };
     pc.onconnectionstatechange = () => {
       if (p.tile) p.tile.style.opacity = pc.connectionState === 'connected' ? '1' : '.6';
@@ -416,6 +417,7 @@
     tile.style.opacity = '.6';
     const v = document.createElement('video');
     v.autoplay = true; v.playsInline = true;
+    applySink(v);
     const off = document.createElement('div');
     off.className = 'camoff';
     const label = document.createElement('span');
@@ -448,6 +450,148 @@
     selfVideo = v;
   }
 
+  // ---------- 裝置設定與測試 ----------
+  const devPref = { mic: store.get('dev-mic') || '', spk: store.get('dev-spk') || '', cam: store.get('dev-cam') || '' };
+  const canSink = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+  async function getMedia(kind, deviceId) {
+    const base = kind === 'video'
+      ? { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } }
+      : { echoCancellation: true, noiseSuppression: true };
+    const mk = (id) => ({ [kind]: id ? { ...base, deviceId: { exact: id } } : base });
+    try { return await navigator.mediaDevices.getUserMedia(mk(deviceId)); }
+    catch (e) { if (deviceId) return navigator.mediaDevices.getUserMedia(mk('')); throw e; } // 裝置被拔掉時改用預設
+  }
+  function applySink(el) {
+    if (canSink && el && el.setSinkId) el.setSinkId(devPref.spk || '').catch(() => {});
+  }
+  // Safari／手機常會擋自動播放聲音：被擋時顯示按鈕讓使用者點一下
+  function showUnlock() { $('unlock').hidden = false; }
+  $('unlock').onclick = () => {
+    $('unlock').hidden = true;
+    for (const p of peers.values()) if (p.video) p.video.play().catch(() => {});
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  };
+
+  let testMic = null, testCam = null, meterRaf = 0, meterCtx = null;
+  async function fillDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    const list = await navigator.mediaDevices.enumerateDevices();
+    const fill = (sel, kind, pref, word) => {
+      const devs = list.filter((d) => d.kind === kind);
+      sel.innerHTML = '';
+      const def = document.createElement('option');
+      def.value = ''; def.textContent = '系統預設';
+      sel.append(def);
+      devs.forEach((d, i) => {
+        if (!d.deviceId || d.deviceId === 'default') return;
+        const o = document.createElement('option');
+        o.value = d.deviceId; o.textContent = d.label || `${word} ${i + 1}（按測試後會顯示名稱）`;
+        sel.append(o);
+      });
+      sel.value = [...sel.options].some((o) => o.value === pref) ? pref : '';
+    };
+    fill($('selMic'), 'audioinput', devPref.mic, '麥克風');
+    fill($('selCam'), 'videoinput', devPref.cam, '鏡頭');
+    fill($('selSpk'), 'audiooutput', devPref.spk, '喇叭');
+    $('spkRow').hidden = !canSink;
+    $('spkNote').hidden = canSink;
+  }
+  function stopTests() {
+    cancelAnimationFrame(meterRaf);
+    if (testMic) { testMic.getTracks().forEach((t) => t.stop()); testMic = null; }
+    if (testCam) { testCam.getTracks().forEach((t) => t.stop()); testCam = null; }
+    if (meterCtx) { meterCtx.close().catch(() => {}); meterCtx = null; }
+    $('micLevel').style.width = '0%';
+    $('micTestBtn').textContent = '🎤 開始測試麥克風';
+    $('camPreview').srcObject = null; $('camPreview').hidden = true;
+    $('camTestBtn').textContent = '📷 預覽鏡頭';
+  }
+  async function startMicTest() {
+    stopTests();
+    try { testMic = await getMedia('audio', $('selMic').value); }
+    catch (_) { $('micHint').textContent = '⚠️ 無法使用麥克風：請允許瀏覽器使用麥克風'; return; }
+    await fillDevices(); // 取得權限後才看得到裝置名稱
+    meterCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const an = meterCtx.createAnalyser();
+    an.fftSize = 512;
+    meterCtx.createMediaStreamSource(testMic).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    let peak = 0;
+    const tick = () => {
+      an.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (const x of buf) { const v = (x - 128) / 128; sum += v * v; }
+      const level = Math.min(1, Math.sqrt(sum / buf.length) * 4);
+      $('micLevel').style.width = (level * 100).toFixed(0) + '%';
+      peak = Math.max(peak * 0.995, level);
+      $('micHint').textContent = peak > 0.08 ? '✅ 有收到聲音' : '對著麥克風說話，綠色長條會跳動';
+      meterRaf = requestAnimationFrame(tick);
+    };
+    tick();
+    $('micTestBtn').textContent = '⏹ 停止測試';
+  }
+  async function playTestTone() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = ctx.createMediaStreamDestination();
+      const el = new Audio();
+      el.srcObject = dest.stream;
+      if (canSink && $('selSpk').value) await el.setSinkId($('selSpk').value).catch(() => {});
+      await el.play();
+      [523, 659, 784, 1047].forEach((f, i) => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.frequency.value = f;
+        const t0 = ctx.currentTime + i * 0.22;
+        g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.3, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.35);
+        o.connect(g).connect(dest); o.start(t0); o.stop(t0 + 0.4);
+      });
+      $('spkHint').textContent = '有聽到「叮叮叮叮」就代表喇叭正常';
+      setTimeout(() => { el.pause(); ctx.close().catch(() => {}); }, 1400);
+    } catch (_) { $('spkHint').textContent = '⚠️ 無法播放，請檢查音量或改選其他裝置'; }
+  }
+  async function startCamTest() {
+    stopTests();
+    try { testCam = await getMedia('video', $('selCam').value); }
+    catch (_) { $('camHint').textContent = '⚠️ 無法開啟鏡頭：請允許瀏覽器使用鏡頭，並關掉其他正在用鏡頭的分頁或 App'; return; }
+    await fillDevices();
+    $('camPreview').srcObject = testCam; $('camPreview').hidden = false; $('camPreview').play().catch(() => {});
+    $('camTestBtn').textContent = '⏹ 關閉預覽';
+    $('camHint').textContent = '';
+  }
+  // 換裝置時，若正在使用就立刻切換過去
+  async function switchDevice(kind) {
+    const isCam = kind === 'video';
+    if (isCam ? !camTrack : !micTrack) return;
+    try {
+      const s = await getMedia(kind, isCam ? devPref.cam : devPref.mic);
+      const t = isCam ? s.getVideoTracks()[0] : s.getAudioTracks()[0];
+      const old = isCam ? camTrack : micTrack;
+      t.onended = old.onended;
+      if (isCam) camTrack = t; else micTrack = t;
+      stopTrack(old);
+      attachAll(); updateMediaButtons();
+    } catch (_) { /* 失敗就維持原本的裝置 */ }
+  }
+  $('settingsBtn').onclick = async () => { $('settings').hidden = false; await fillDevices(); };
+  $('settingsClose').onclick = () => { stopTests(); $('settings').hidden = true; };
+  $('micTestBtn').onclick = () => (testMic ? stopTests() : startMicTest());
+  $('camTestBtn').onclick = () => (testCam ? stopTests() : startCamTest());
+  $('spkTestBtn').onclick = playTestTone;
+  $('selMic').onchange = () => {
+    devPref.mic = $('selMic').value; store.set('dev-mic', devPref.mic);
+    if (testMic) startMicTest();
+    switchDevice('audio');
+  };
+  $('selCam').onchange = () => {
+    devPref.cam = $('selCam').value; store.set('dev-cam', devPref.cam);
+    if (testCam) startCamTest();
+    switchDevice('video');
+  };
+  $('selSpk').onchange = () => {
+    devPref.spk = $('selSpk').value; store.set('dev-spk', devPref.spk);
+    for (const p of peers.values()) applySink(p.video);
+  };
+
   // ---------- 相機 / 麥克風 ----------
   // 需要時才開（例如雙方都按了 ○、或在討論桌選了開）；右上角按鈕是總開關
   let camAllowed = true, micAllowed = true;
@@ -472,9 +616,7 @@
       return null;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(isCam
-        ? { video: { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } } }
-        : { audio: { echoCancellation: true, noiseSuppression: true } });
+      const stream = await getMedia(kind, isCam ? devPref.cam : devPref.mic);
       const track = isCam ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0];
       track.onended = () => { // 被系統或其他分頁中斷
         if (isCam && camTrack === track) { camTrack = null; camAllowed = false; }
@@ -509,9 +651,9 @@
     if (resync) { resync = false; syncMedia(); }
   }
   function updateMediaButtons() {
-    const st = (allowed, track, name) => (!allowed ? `${name}：已停用` : track ? `${name}：使用中` : `${name}：待命`);
-    $('camBtn').textContent = '📷 ' + st(camAllowed, camTrack, '鏡頭');
-    $('micBtn').textContent = '🎤 ' + st(micAllowed, micTrack, '麥克風');
+    const st2 = (allowed, track) => (!allowed ? '已停用' : track ? '使用中' : '待命');
+    $('camBtn').innerHTML = `📷 <span class="lbl">鏡頭：</span>${st2(camAllowed, camTrack)}`;
+    $('micBtn').innerHTML = `🎤 <span class="lbl">麥克風：</span>${st2(micAllowed, micTrack)}`;
     $('camBtn').className = !camAllowed ? 'off' : camTrack ? 'live' : '';
     $('micBtn').className = !micAllowed ? 'off' : micTrack ? 'live' : '';
     if (selfVideo) {
