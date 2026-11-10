@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>像素自習室</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="join" class="overlay">
+    <div class="card">
+      <h1>📚 像素自習室</h1>
+      <p class="sub">走近朋友就會自動接通視訊</p>
+      <canvas id="preview" width="64" height="64"></canvas>
+      <label>名字<input id="name" maxlength="16" placeholder="例如：Keita"></label>
+      <div class="label">衣服顏色</div>
+      <div id="colors" class="swatches"></div>
+      <div class="label">髮色</div>
+      <div id="hairs" class="swatches"></div>
+      <label id="pwWrap" hidden>房間密碼<input id="pw" type="password"></label>
+      <button id="joinBtn" class="primary">進入自習室</button>
+      <p id="joinErr" class="err"></p>
+      <p class="hint">會詢問相機與麥克風權限。拒絕也能進入，只是別人看不到、聽不到你。</p>
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <header>
+      <span class="title">📚 像素自習室</span>
+      <span id="zone" class="zone"></span>
+      <span class="spacer"></span>
+      <button id="autoBtn" title="關掉後，走近別人時要按「接通」才會開始通話">🔔 自動接通：開</button>
+      <button id="camBtn">📷 相機</button>
+      <button id="micBtn">🎤 麥克風</button>
+    </header>
+    <main>
+      <section id="stage">
+        <div id="videos"></div>
+        <canvas id="game"></canvas>
+        <div id="dpad">
+          <button data-dir="up" class="up">▲</button>
+          <button data-dir="left" class="left">◀</button>
+          <button data-dir="right" class="right">▶</button>
+          <button data-dir="down" class="down">▼</button>
+        </div>
+        <div id="nearby"></div>
+        <div id="help">方向鍵／WASD 移動・Enter 聊天</div>
+      </section>
+      <aside>
+        <div class="panel">
+          <h2>🍅 共同番茄鐘</h2>
+          <div id="pomoPhase">尚未開始</div>
+          <div id="pomoTime">--:--</div>
+          <div class="row">
+            <label>專注 <input id="pomoFocus" type="number" value="25" min="1" max="120"> 分</label>
+            <label>休息 <input id="pomoBreak" type="number" value="5" min="1" max="60"> 分</label>
+          </div>
+          <div class="row">
+            <button id="pomoStart" class="primary">開始</button>
+            <button id="pomoSkip">跳過</button>
+            <button id="pomoStop">停止</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>🏆 今日自習時間</h2>
+          <ol id="board"></ol>
+        </div>
+        <div class="panel chat">
+          <h2>💬 聊天室</h2>
+          <div id="messages"></div>
+          <form id="chatForm">
+            <input id="chatInput" maxlength="300" placeholder="輸入訊息…" autocomplete="off">
+            <button>送出</button>
+          </form>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="offline" class="overlay" hidden><div class="card"><p>連線中斷，正在重新連線…</p></div></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="map.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>
