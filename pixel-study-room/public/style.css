@@ -73,17 +73,28 @@ aside { width: 320px; flex: none; display: flex; flex-direction: column; gap: 10
   .vtile.self { width: 90px; height: 68px; }
 }
 
-#autoBtn.manual { background: #eee3d1; }
-#nearby { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 3; max-width: calc(100% - 200px); }
-.near { display: flex; align-items: center; gap: 10px; background: rgba(255,250,242,.95); border-radius: 12px; padding: 6px 8px 6px 12px; box-shadow: 0 2px 10px rgba(0,0,0,.3); font-size: 14px; white-space: nowrap; }
-.near .nm { font-weight: 700; }
-.near .st { color: #8a7565; font-size: 12px; }
-.near button { padding: 4px 10px; }
-.near button.call { background: #2e9e5b; border-color: #278a4f; color: #fff; }
-.near button.hang { background: #d9534f; border-color: #c4413d; color: #fff; }
-.near.ringing { outline: 3px solid #f0a33a; animation: ring 1s ease-in-out infinite; }
-@keyframes ring { 50% { outline-color: transparent; } }
-@media (pointer: coarse) { #nearby { left: auto; right: 10px; transform: none; max-width: calc(100% - 180px); } }
 
 .vtile .camoff { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; font-size: 40px; font-weight: 700; color: #fff; background: #5a4a3f; }
 .vtile.cam-off .camoff { display: flex; }
+
+button.live { background: #dff2e5; border-color: #8fcaa2; color: #22703f; }
+button.off { background: #f3dcd6; border-color: #e0b1a5; color: #a24a36; }
+#bubbles { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.bubble { position: absolute; transform: translate(-50%, -100%); display: flex; align-items: center; gap: 2px; background: rgba(255,250,242,.96); border-radius: 999px; padding: 3px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.35); pointer-events: auto; }
+.bubble::after { content: ""; position: absolute; left: 50%; bottom: -5px; transform: translateX(-50%); border: 5px solid transparent; border-top-color: rgba(255,250,242,.96); border-bottom: 0; }
+.bubble button { padding: 1px 8px; border-radius: 999px; font-size: 13px; line-height: 1.4; }
+.bubble button.o, .tablecard button.o { background: #2e9e5b; border-color: #278a4f; color: #fff; }
+.bubble button.x, .tablecard button.x { background: #fff; border-color: #d9b3aa; color: #b4473a; }
+.bubble.invite { outline: 3px solid #f0a33a; animation: ring 1s ease-in-out infinite; }
+.bubble .seg { display: flex; align-items: center; gap: 3px; padding: 1px 4px 1px 6px; border-radius: 999px; }
+.bubble .seg + .seg { border-left: 1px solid #e2d4c0; border-radius: 0 999px 999px 0; margin-left: 2px; }
+.bubble .seg.on { background: #dff2e5; color: #22703f; }
+.bubble .seg.invite { background: #fdebd0; }
+@keyframes ring { 50% { outline-color: transparent; } }
+#prompt { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 3; }
+.tablecard { background: rgba(255,250,242,.97); border-radius: 12px; padding: 10px 12px; box-shadow: 0 2px 12px rgba(0,0,0,.35); display: flex; flex-direction: column; gap: 6px; min-width: 240px; font-size: 14px; }
+.tablecard .th { font-weight: 700; }
+.tablecard .trow { display: flex; align-items: center; gap: 6px; }
+.tablecard .trow span { flex: 1; }
+.tablecard button { padding: 3px 12px; }
+@media (pointer: coarse) { #prompt { left: auto; right: 10px; transform: none; } }

@@ -20,7 +20,7 @@
       <label id="pwWrap" hidden>房間密碼<input id="pw" type="password"></label>
       <button id="joinBtn" class="primary">進入自習室</button>
       <p id="joinErr" class="err"></p>
-      <p class="hint">進入時相機和麥克風預設是關閉的，需要時再按上方的按鈕打開。</p>
+      <p class="hint">自習區要互相邀請才會開視訊；討論區走到桌邊可以選要不要開鏡頭和麥克風；休息區靠近就能直接聊天。</p>
     </div>
   </div>
 
@@ -29,9 +29,8 @@
       <span class="title">📚 像素自習室</span>
       <span id="zone" class="zone"></span>
       <span class="spacer"></span>
-      <button id="autoBtn" title="關掉後，走近別人時要按「接通」才會開始通話">🔔 自動接通：開</button>
-      <button id="camBtn" class="off">📷 相機：關</button>
-      <button id="micBtn" class="off">🎤 麥克風：關</button>
+      <button id="camBtn" title="總開關：停用後任何情況都不會開鏡頭">📷 鏡頭：待命</button>
+      <button id="micBtn" title="總開關：停用後任何情況都不會開麥克風">🎤 麥克風：待命</button>
     </header>
     <main>
       <section id="stage">
@@ -43,7 +42,8 @@
           <button data-dir="right" class="right">▶</button>
           <button data-dir="down" class="down">▼</button>
         </div>
-        <div id="nearby"></div>
+        <div id="bubbles"></div>
+        <div id="prompt"></div>
         <div id="help">方向鍵／WASD 移動・Enter 聊天</div>
       </section>
       <aside>

@@ -16,7 +16,6 @@
     name: store.get('name') || '',
     color: store.get('color') || COLORS[4],
     hair: store.get('hair') || HAIRS[0],
-    auto: store.get('auto') !== '0',
     password: '',
   };
   let selfId = null;
@@ -28,8 +27,9 @@
   let boardData = [];
   const users = new Map(); // id -> {..., rx, ry, anim}
   const peers = new Map(); // id -> {pc, pending, tile, video}
-  let nearby = []; // 附近的人 [{id,name,linked,iWant,theyWant}]
-  window.__room = { users, peers };
+  let linkState = { peers: [], table: null }; // 伺服器算好的連線狀態
+  const linkInfo = new Map(); // id -> {ctx, send, recv, mine, theirs}
+  window.__room = { users, peers, linkInfo };
 
   // ---------- 小工具 ----------
   function shade(hex, amt) {
@@ -198,7 +198,7 @@
       selfId = res.self.id;
       clockOffset = res.now - Date.now();
       users.clear();
-      nearby = []; renderNearby();
+      applyLinks({ peers: [], table: null });
       res.users.forEach(addUser);
       $('messages').innerHTML = '';
       res.chat.forEach(addMsg);
@@ -216,7 +216,7 @@
     if (!joined) return;
     $('offline').hidden = false;
     for (const id of [...peers.keys()]) closePeer(id);
-    nearby = []; renderNearby();
+    applyLinks({ peers: [], table: null });
   });
   socket.on('user-joined', addUser);
   socket.on('user-moved', (m) => {
@@ -230,51 +230,111 @@
   socket.on('chat', addMsg);
   socket.on('pomo', (p) => setPomo(p, false));
   socket.on('board', setBoard);
-  socket.on('nearby', (list) => {
-    const before = new Set(nearby.filter((n) => n.theyWant && !n.iWant).map((n) => n.id));
-    nearby = list || [];
-    if (nearby.some((n) => n.theyWant && !n.iWant && !before.has(n.id))) beep('ring');
-    renderNearby();
-  });
-
-  // ---------- 接通按鈕 ----------
-  function updateAutoBtn() {
-    $('autoBtn').textContent = profile.auto ? '🔔 自動接通：開' : '🔕 自動接通：關';
-    $('autoBtn').classList.toggle('manual', !profile.auto);
-  }
-  $('autoBtn').onclick = () => {
-    profile.auto = !profile.auto;
-    store.set('auto', profile.auto ? '1' : '0');
-    socket.emit('set-auto', profile.auto);
-    updateAutoBtn();
-  };
-  updateAutoBtn();
-  function renderNearby() {
-    const box = $('nearby');
-    box.innerHTML = '';
-    for (const n of nearby) {
-      const row = document.createElement('div');
-      row.className = 'near';
-      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = n.name;
-      const st = document.createElement('span'); st.className = 'st';
-      const btn = document.createElement('button');
-      if (n.linked) {
-        st.textContent = '通話中'; btn.textContent = '掛斷'; btn.className = 'hang';
-        btn.onclick = () => socket.emit('hangup', n.id);
-      } else if (n.iWant && !n.theyWant) {
-        st.textContent = '等待對方接通…'; btn.textContent = '取消';
-        btn.onclick = () => socket.emit('hangup', n.id);
-      } else if (n.theyWant) {
-        row.classList.add('ringing');
-        st.textContent = '想跟你通話'; btn.textContent = '📞 接聽'; btn.className = 'call';
-        btn.onclick = () => socket.emit('call', n.id);
-      } else {
-        st.textContent = '在附近'; btn.textContent = '📞 接通'; btn.className = 'call';
-        btn.onclick = () => socket.emit('call', n.id);
-      }
-      row.append(nm, st, btn);
-      box.append(row);
+  // ---------- 連線狀態（自習區／討論桌／休息區） ----------
+  const kindsOf = (n) => (n.ctx === 'quiet' ? ['v', 'a'] : n.ctx === 'lounge' ? ['v'] : []);
+  const isInvite = (n) => kindsOf(n).some((k) => n.theirs[k] === true && n.mine[k] === null);
+  function applyLinks(st) {
+    const prevInvites = new Set([...linkInfo.values()].filter(isInvite).map((n) => n.id));
+    linkState = st;
+    linkInfo.clear();
+    for (const n of st.peers) linkInfo.set(n.id, n);
+    for (const n of st.peers) {
+      if (!peers.has(n.id)) { const init = selfId < n.id; getPeer(n.id, init); if (init) makeOffer(n.id); }
     }
+    for (const id of [...peers.keys()]) if (!linkInfo.has(id)) closePeer(id);
+    if (st.peers.some((n) => isInvite(n) && !prevInvites.has(n.id))) beep('ring');
+    for (const id of peers.keys()) refreshTile(id);
+    renderBubbles();
+    renderTable();
+    updateZone();
+    syncMedia();
+  }
+  socket.on('links', applyLinks);
+
+  function mkBtn(label, fn, cls) {
+    const b = document.createElement('button');
+    b.textContent = label; b.className = cls || ''; b.onclick = fn;
+    return b;
+  }
+  const pair = (id, kind, value) => socket.emit('pair', { peer: id, kind, value });
+
+  // 頭上的 ○✕ 泡泡（自習區：鏡頭、麥克風分開問／休息區：只問鏡頭）
+  const bubbles = new Map();
+  function renderBubbles() {
+    const want = new Set();
+    for (const n of linkState.peers) {
+      const segs = [];
+      for (const k of kindsOf(n)) {
+        if (n.mine[k] === false) continue; // 按過 ✕ 就不再顯示，走開再回來會重新詢問
+        const icon = k === 'v' ? '📷' : '🎤';
+        const seg = document.createElement('span');
+        seg.className = 'seg';
+        const t = document.createElement('span');
+        const yes = mkBtn('○', () => pair(n.id, k, true), 'o');
+        const no = mkBtn('✕', () => pair(n.id, k, false), 'x');
+        if (n.mine[k] === true && n.theirs[k] === true) {
+          seg.classList.add('on'); t.textContent = `${icon} 開`;
+          seg.append(t, mkBtn('關', () => pair(n.id, k, false), 'x'));
+        } else if (n.mine[k] === true) {
+          t.textContent = `${icon} 等待…`; seg.append(t, no);
+        } else if (n.theirs[k] === true) {
+          seg.classList.add('invite'); t.textContent = `${icon} 邀請你`; seg.append(t, yes, no);
+        } else {
+          t.textContent = `${icon}？`; seg.append(t, yes, no);
+        }
+        segs.push(seg);
+      }
+      if (!segs.length) continue;
+      want.add(n.id);
+      let el = bubbles.get(n.id);
+      if (!el) { el = document.createElement('div'); $('bubbles').append(el); bubbles.set(n.id, el); }
+      el.innerHTML = '';
+      el.className = 'bubble' + (isInvite(n) ? ' invite' : '');
+      el.append(...segs);
+    }
+    for (const [id, el] of bubbles) if (!want.has(id)) { el.remove(); bubbles.delete(id); }
+    placeBubbles();
+  }
+  function placeBubbles() {
+    if (!bubbles.size) return;
+    const cr = canvas.getBoundingClientRect(), sr = $('stage').getBoundingClientRect();
+    const sc = Math.min(cr.width / canvas.width, cr.height / canvas.height);
+    const ox = cr.left - sr.left + (cr.width - canvas.width * sc) / 2;
+    const oy = cr.top - sr.top + (cr.height - canvas.height * sc) / 2;
+    for (const [id, el] of bubbles) {
+      const u = users.get(id);
+      if (!u) continue;
+      el.style.left = (ox + (u.rx * T + T / 2) * sc) + 'px';
+      el.style.top = (oy + (u.ry * T - 20) * sc) + 'px';
+    }
+  }
+
+  // 討論桌卡片：鏡頭／麥克風分開問
+  function renderTable() {
+    const box = $('prompt');
+    box.innerHTML = '';
+    const t = linkState.table;
+    if (!t) return;
+    const card = document.createElement('div');
+    card.className = 'tablecard';
+    const h = document.createElement('div');
+    h.className = 'th';
+    h.textContent = `🪑 討論桌 ${t.id}・` + (t.members.length ? t.members.join('、') : '目前只有你');
+    card.append(h);
+    for (const [k, icon, name] of [['cam', '📷', '鏡頭'], ['mic', '🎤', '麥克風']]) {
+      const row = document.createElement('div');
+      row.className = 'trow';
+      const label = document.createElement('span');
+      if (!t[k + 'Ans']) {
+        label.textContent = `${icon} 要開${name}嗎？`;
+        row.append(label, mkBtn('○', () => socket.emit('table-media', { [k]: true }), 'o'), mkBtn('✕', () => socket.emit('table-media', { [k]: false }), 'x'));
+      } else {
+        label.textContent = `${icon} ${name}：${t[k] ? '開' : '關'}`;
+        row.append(label, mkBtn(t[k] ? '關閉' : '開啟', () => socket.emit('table-media', { [k]: !t[k] }), t[k] ? 'x' : 'o'));
+      }
+      card.append(row);
+    }
+    box.append(card);
   }
 
   function addUser(u) {
@@ -292,7 +352,7 @@
     if (initiator) {
       pc.addTransceiver('audio', { direction: 'sendrecv' });
       pc.addTransceiver('video', { direction: 'sendrecv' });
-      attachTracks(p);
+      attachTracks(id);
     }
     pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: id, data: { candidate: e.candidate } }); };
     pc.ontrack = (e) => {
@@ -317,11 +377,6 @@
       socket.emit('signal', { to: id, data: { sdp: p.pc.localDescription } });
     } catch (e) { console.warn('offer 失敗', e); }
   }
-  socket.on('peer-link', ({ peer, initiator }) => {
-    getPeer(peer, initiator);
-    if (initiator) makeOffer(peer);
-  });
-  socket.on('peer-unlink', ({ peer }) => closePeer(peer));
   socket.on('signal', async ({ from, data }) => {
     if (!data) return;
     let p = peers.get(from);
@@ -331,7 +386,7 @@
         await p.pc.setRemoteDescription(data.sdp);
         if (data.sdp.type === 'offer') {
           p.pc.getTransceivers().forEach((t) => { t.direction = 'sendrecv'; });
-          attachTracks(p);
+          attachTracks(from);
         }
         for (const c of p.pending) await p.pc.addIceCandidate(c).catch(() => {});
         p.pending = [];
@@ -372,9 +427,12 @@
   function refreshTile(id) {
     const p = peers.get(id), u = users.get(id);
     if (!p || !p.tile || !u) return;
-    p.tile.classList.toggle('cam-off', !u.cam);
+    const n = linkInfo.get(id);
+    const flowing = n && (n.recv.v || n.recv.a || n.send.v || n.send.a);
+    p.tile.hidden = !flowing;
+    p.tile.classList.toggle('cam-off', !(n && n.recv.v && u.cam));
     p.off.textContent = u.name.slice(0, 1);
-    p.label.textContent = (u.mic ? '' : '🔇 ') + u.name;
+    p.label.textContent = (n && n.recv.a && u.mic ? '' : '🔇 ') + u.name;
   }
   let selfVideo = null;
   function setupSelfTile() {
@@ -390,61 +448,83 @@
     selfVideo = v;
   }
 
-  // ---------- 相機 / 麥克風（預設關閉） ----------
-  function attachTracks(p) {
+  // ---------- 相機 / 麥克風 ----------
+  // 需要時才開（例如雙方都按了 ○、或在討論桌選了開）；右上角按鈕是總開關
+  let camAllowed = true, micAllowed = true;
+  function attachTracks(id) {
+    const p = peers.get(id);
+    if (!p) return;
+    const n = linkInfo.get(id);
+    const send = n ? n.send : { v: false, a: false };
     for (const t of p.pc.getTransceivers()) {
       const kind = t.receiver && t.receiver.track && t.receiver.track.kind;
-      const track = kind === 'video' ? camTrack : kind === 'audio' ? micTrack : null;
+      const track = kind === 'video' ? (send.v ? camTrack : null) : kind === 'audio' ? (send.a ? micTrack : null) : null;
       if (t.sender && t.sender.track !== track) t.sender.replaceTrack(track).catch(() => {});
     }
   }
-  function attachAll() { for (const p of peers.values()) attachTracks(p); }
+  function attachAll() { for (const id of peers.keys()) attachTracks(id); }
+  function localNotice(text) { addMsg({ system: true, text, ts: Date.now() }); }
+  async function acquire(kind) {
+    const isCam = kind === 'video';
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      localNotice('⚠️ 這個瀏覽器不支援相機／麥克風（請確認網址是 https 開頭）');
+      if (isCam) camAllowed = false; else micAllowed = false;
+      return null;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(isCam
+        ? { video: { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } } }
+        : { audio: { echoCancellation: true, noiseSuppression: true } });
+      const track = isCam ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0];
+      track.onended = () => { // 被系統或其他分頁中斷
+        if (isCam && camTrack === track) { camTrack = null; camAllowed = false; }
+        if (!isCam && micTrack === track) { micTrack = null; micAllowed = false; }
+        attachAll(); updateMediaButtons();
+        localNotice(isCam ? '⚠️ 相機被中斷了，按右上角「鏡頭」按鈕可以重新開啟' : '⚠️ 麥克風被中斷了，按右上角「麥克風」按鈕可以重新開啟');
+      };
+      return track;
+    } catch (_) {
+      if (isCam) camAllowed = false; else micAllowed = false;
+      localNotice(isCam
+        ? '⚠️ 無法開啟相機：請允許瀏覽器使用相機，並關掉其他正在用相機的分頁或 App，再按右上角「鏡頭」按鈕'
+        : '⚠️ 無法開啟麥克風：請允許瀏覽器使用麥克風，再按右上角「麥克風」按鈕');
+      return null;
+    }
+  }
+  function stopTrack(t) { t.onended = null; t.stop(); }
+  let syncing = false, resync = false;
+  async function syncMedia() {
+    if (syncing) { resync = true; return; }
+    syncing = true;
+    try {
+      const needV = camAllowed && linkState.peers.some((n) => n.send.v);
+      const needA = micAllowed && linkState.peers.some((n) => n.send.a);
+      if (needV && !camTrack) camTrack = await acquire('video');
+      if (!needV && camTrack) { stopTrack(camTrack); camTrack = null; }
+      if (needA && !micTrack) micTrack = await acquire('audio');
+      if (!needA && micTrack) { stopTrack(micTrack); micTrack = null; }
+    } finally { syncing = false; }
+    attachAll();
+    updateMediaButtons();
+    if (resync) { resync = false; syncMedia(); }
+  }
   function updateMediaButtons() {
-    $('camBtn').textContent = camTrack ? '📷 相機：開' : '📷 相機：關';
-    $('micBtn').textContent = micTrack ? '🎤 麥克風：開' : '🎤 麥克風：關';
-    $('camBtn').classList.toggle('off', !camTrack);
-    $('micBtn').classList.toggle('off', !micTrack);
+    const st = (allowed, track, name) => (!allowed ? `${name}：已停用` : track ? `${name}：使用中` : `${name}：待命`);
+    $('camBtn').textContent = '📷 ' + st(camAllowed, camTrack, '鏡頭');
+    $('micBtn').textContent = '🎤 ' + st(micAllowed, micTrack, '麥克風');
+    $('camBtn').className = !camAllowed ? 'off' : camTrack ? 'live' : '';
+    $('micBtn').className = !micAllowed ? 'off' : micTrack ? 'live' : '';
     if (selfVideo) {
       selfVideo.parentElement.hidden = !camTrack;
-      selfVideo.srcObject = camTrack ? new MediaStream([camTrack]) : null;
-      if (camTrack) selfVideo.play().catch(() => {});
+      if (camTrack && (!selfVideo.srcObject || selfVideo.srcObject.getVideoTracks()[0] !== camTrack)) {
+        selfVideo.srcObject = new MediaStream([camTrack]); selfVideo.play().catch(() => {});
+      }
+      if (!camTrack) selfVideo.srcObject = null;
     }
     if (joined) socket.emit('media-state', { cam: !!camTrack, mic: !!micTrack });
   }
-  function localNotice(text) { addMsg({ system: true, text, ts: Date.now() }); }
-  async function toggleMedia(kind) {
-    const isCam = kind === 'video';
-    const cur = isCam ? camTrack : micTrack;
-    if (cur) {
-      cur.onended = null; cur.stop();
-      if (isCam) camTrack = null; else micTrack = null;
-    } else {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { localNotice('⚠️ 這個瀏覽器不支援相機／麥克風（請確認網址是 https 開頭）'); return; }
-      try {
-        const constraints = isCam
-          ? { video: { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } } }
-          : { audio: { echoCancellation: true, noiseSuppression: true } };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        const track = isCam ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0];
-        track.onended = () => { // 被系統或其他分頁中斷時，自動變回關閉
-          if (isCam && camTrack === track) camTrack = null;
-          if (!isCam && micTrack === track) micTrack = null;
-          attachAll(); updateMediaButtons();
-          localNotice(isCam ? '⚠️ 相機被中斷了，可以再按一次「相機」重新開啟' : '⚠️ 麥克風被中斷了，可以再按一次「麥克風」重新開啟');
-        };
-        if (isCam) camTrack = track; else micTrack = track;
-      } catch (e) {
-        localNotice(isCam
-          ? '⚠️ 無法開啟相機：請允許瀏覽器使用相機，並關掉其他正在用相機的分頁或 App'
-          : '⚠️ 無法開啟麥克風：請允許瀏覽器使用麥克風');
-        return;
-      }
-    }
-    attachAll();
-    updateMediaButtons();
-  }
-  $('camBtn').onclick = () => toggleMedia('video');
-  $('micBtn').onclick = () => toggleMedia('audio');
+  $('camBtn').onclick = () => { camAllowed = !camAllowed; syncMedia(); };
+  $('micBtn').onclick = () => { micAllowed = !micAllowed; syncMedia(); };
   socket.on('user-media', ({ id, cam, mic }) => {
     const u = users.get(id);
     if (!u) return;
@@ -497,7 +577,11 @@
     const z = $('zone');
     const r = MAP.region(me.x, me.y);
     z.classList.toggle('quiet', r === 'quiet');
-    z.textContent = r === 'quiet' ? '🤫 安靜區：不會接通任何人' : r === 'discuss' ? '💬 討論區' : r === 'lounge' ? '☕ 休息區' : '🚪 走廊';
+    const t = linkState.table;
+    z.textContent = r === 'quiet' ? '🤫 自習區：走到別人旁邊可以邀請視訊'
+      : t ? `🪑 討論桌 ${t.id}`
+      : r === 'discuss' ? '💬 討論區：走到桌子旁邊加入討論'
+      : r === 'lounge' ? '☕ 休息區：靠近就能聊天' : '🚪 走廊';
   }
 
   // ---------- 畫面 ----------
@@ -521,7 +605,7 @@
       if (u.moving) u.anim = (u.anim || 0) + dt; else u.anim = 0;
     }
 
-    if (me && !MAP.isQuiet(me.x, me.y)) {
+    if (me && MAP.region(me.x, me.y) === 'lounge') { // 只有休息區用距離判斷，才畫範圍圈
       ctx.save();
       ctx.strokeStyle = 'rgba(74,144,217,.5)'; ctx.fillStyle = 'rgba(74,144,217,.08)';
       ctx.setLineDash([6, 6]); ctx.lineWidth = 2;
@@ -535,9 +619,10 @@
     for (const u of list) {
       const px = u.rx * T, py = u.ry * T - 4;
       drawAvatar(ctx, px, py, 2, u);
-      const connected = peers.has(u.id);
-      const ringing = !connected && nearby.some((n) => n.id === u.id && n.theyWant && !n.iWant);
-      const label = (MAP.isQuiet(u.x, u.y) ? '🤫 ' : '') + u.name;
+      const ln = linkInfo.get(u.id);
+      const connected = !!ln && (ln.send.v || ln.send.a || ln.recv.v || ln.recv.a);
+      const ringing = !!ln && isInvite(ln);
+      const label = u.name;
       const w = ctx.measureText(label).width + 10;
       ctx.fillStyle = u.id === selfId ? 'rgba(74,144,217,.9)' : connected ? 'rgba(46,158,91,.92)' : ringing ? 'rgba(232,140,40,.95)' : 'rgba(0,0,0,.55)';
       roundRect(ctx, px + T / 2 - w / 2, py - 14, w, 15, 7); ctx.fill();
@@ -553,6 +638,7 @@
         p.video.volume = Math.max(0.3, Math.min(1, 1 - (d - 1) / 4));
       }
     }
+    placeBubbles();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

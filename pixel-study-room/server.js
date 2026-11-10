@@ -10,8 +10,10 @@ const PORT = process.env.PORT || 3000;
 const ROOM_PASSWORD = process.env.ROOM_PASSWORD || '';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const TZ = 'Asia/Taipei';
-const NEAR = 2.5; // 走到這個距離（格）以內就接通
-const FAR = 3.5;  // 超過這個距離才斷線（避免在邊界一直斷斷續續）
+const NEAR = 2.5;       // 休息區：這個距離（格）以內就接通語音
+const FAR = 3.5;        // 超過這個距離才斷線（避免在邊界一直斷斷續續）
+const QUIET_NEAR = 1.5; // 自習區：要站在旁邊（含斜角）才會詢問
+const QUIET_FAR = 2.5;
 
 const app = express();
 const server = http.createServer(app);
@@ -35,7 +37,7 @@ app.get('/config', (req, res) => {
 
 // ---------- 狀態 ----------
 const users = new Map(); // socketId -> {id,name,color,hair,x,y,dir}
-const links = new Set(); // "idA|idB"
+const links = new Set(); // 目前有連線的配對 "idA|idB"
 const chatHistory = [];
 const pomo = { phase: 'idle', endsAt: 0, focus: 25, brk: 5, round: 0 };
 let pomoTimer = null;
@@ -58,77 +60,76 @@ function board() {
 
 // ---------- 接近偵測 ----------
 const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-function canLink(a, b) {
-  const ra = MAP.region(a.x, a.y);
-  const rb = MAP.region(b.x, b.y);
-  if (ra === 'quiet' || rb === 'quiet') return false;
-  return ra === rb || ra === 'door' || rb === 'door';
+// 三種區域的規則：
+//  quiet  自習區：站在旁邊，鏡頭和麥克風分開問，各自要雙方都按 ○ 才開
+//  table  討論桌：同一桌的人互相連線，鏡頭／麥克風各自決定要不要開
+//  lounge 休息區：靠近就自動開語音；視訊要雙方都按 ○
+const pairConsent = new Map(); // "a|b" -> { v: {[id]: true/false}, a: {...} }  v=視訊 a=語音
+const linkCtx = new Map();     // "a|b" -> 'quiet' | 'table' | 'lounge'
+const tableState = new Map();  // id -> { table, cam, mic, camAns, micAns }
+const sentState = new Map();   // id -> 上次送出的狀態（避免重複送）
+
+function ctxOf(a, b, prev) {
+  const ra = MAP.region(a.x, a.y), rb = MAP.region(b.x, b.y);
+  const d = Math.hypot(a.x - b.x, a.y - b.y);
+  if (ra === 'quiet' && rb === 'quiet') return d <= (prev === 'quiet' ? QUIET_FAR : QUIET_NEAR) ? 'quiet' : null;
+  const ta = MAP.tableAt(a.x, a.y);
+  if (ta && ta === MAP.tableAt(b.x, b.y)) return 'table';
+  if (ra === 'lounge' && rb === 'lounge') return d <= (prev === 'lounge' ? FAR : NEAR) ? 'lounge' : null;
+  return null;
 }
-// 接通意願：auto=自動接通；accept=手動按了「接通」的人；declined=按了「掛斷」的人
-const consent = new Map(); // id -> {auto, accept:Set, declined:Set}
-const nearPairs = new Set(); // 目前在範圍內的配對
-const nearSent = new Map();  // id -> 上次送出的附近名單
-function wants(a, b) {
-  const c = consent.get(a);
-  if (!c || c.declined.has(b)) return false;
-  return c.auto || c.accept.has(b);
-}
-function clearConsent(a, b) {
-  const ca = consent.get(a), cb = consent.get(b);
-  if (ca) { ca.accept.delete(b); ca.declined.delete(b); }
-  if (cb) { cb.accept.delete(a); cb.declined.delete(a); }
-}
-// 重新計算所有人之間的距離、接通狀態與附近名單
+
 function recompute() {
   const ids = [...users.keys()];
-  const nearby = new Map(ids.map((i) => [i, []]));
+  for (const id of ids) {
+    const u = users.get(id);
+    const ts = tableState.get(id);
+    const t = MAP.tableAt(u.x, u.y);
+    if (ts.table !== t) Object.assign(ts, { table: t, cam: false, mic: false, camAns: false, micAns: false });
+  }
+  const out = new Map(ids.map((i) => [i, []]));
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = ids[i], b = ids[j];
-      const ua = users.get(a), ub = users.get(b);
       const key = pairKey(a, b);
-      const d = Math.hypot(ua.x - ub.x, ua.y - ub.y);
-      const inRange = canLink(ua, ub) && d <= (nearPairs.has(key) ? FAR : NEAR);
-      if (inRange) nearPairs.add(key);
-      else if (nearPairs.has(key)) { nearPairs.delete(key); clearConsent(a, b); }
-      const wa = wants(a, b), wb = wants(b, a);
-      const should = inRange && wa && wb;
-      const linked = links.has(key);
-      if (should && !linked) {
-        links.add(key);
-        io.to(a).emit('peer-link', { peer: b, initiator: a < b });
-        io.to(b).emit('peer-link', { peer: a, initiator: b < a });
-      } else if (!should && linked) {
-        links.delete(key);
-        io.to(a).emit('peer-unlink', { peer: b });
-        io.to(b).emit('peer-unlink', { peer: a });
+      const prev = linkCtx.get(key);
+      const ctx = ctxOf(users.get(a), users.get(b), prev);
+      if (ctx !== prev) pairConsent.delete(key); // 換了情境就重新詢問
+      if (ctx) { linkCtx.set(key, ctx); links.add(key); } else { linkCtx.delete(key); links.delete(key); continue; }
+      const pc = pairConsent.get(key) || { v: {}, a: {} };
+      const get = (k, id) => (pc[k][id] === undefined ? null : pc[k][id]);
+      const ca = { v: get('v', a), a: get('a', a) };
+      const cb = { v: get('v', b), a: get('a', b) };
+      const bothV = ca.v === true && cb.v === true;
+      const bothA = ca.a === true && cb.a === true;
+      let sab, sba; // a 送給 b、b 送給 a 的內容 {v: 視訊, a: 語音}
+      if (ctx === 'quiet') { sab = { v: bothV, a: bothA }; sba = sab; }
+      else if (ctx === 'lounge') { sab = { v: bothV, a: true }; sba = sab; }
+      else {
+        const A = tableState.get(a), B = tableState.get(b);
+        sab = { v: A.cam, a: A.mic }; sba = { v: B.cam, a: B.mic };
       }
-      if (inRange) {
-        nearby.get(a).push({ id: b, name: ub.name, linked: should, iWant: wa, theyWant: wb });
-        nearby.get(b).push({ id: a, name: ua.name, linked: should, iWant: wb, theyWant: wa });
-      }
+      out.get(a).push({ id: b, ctx, send: sab, recv: sba, mine: ca, theirs: cb });
+      out.get(b).push({ id: a, ctx, send: sba, recv: sab, mine: cb, theirs: ca });
     }
   }
-  for (const [id, list] of nearby) {
-    const s = JSON.stringify(list);
-    if (nearSent.get(id) !== s) { nearSent.set(id, s); io.to(id).emit('nearby', list); }
+  for (const id of ids) {
+    const ts = tableState.get(id);
+    const table = ts.table ? {
+      id: ts.table, cam: ts.cam, mic: ts.mic, camAns: ts.camAns, micAns: ts.micAns,
+      members: ids.filter((o) => o !== id && tableState.get(o).table === ts.table).map((o) => users.get(o).name),
+    } : null;
+    const payload = { peers: out.get(id), table };
+    const str = JSON.stringify(payload);
+    if (sentState.get(id) !== str) { sentState.set(id, str); io.to(id).emit('links', payload); }
   }
 }
-function dropLinks(id) {
-  for (const key of [...links]) {
+function forget(id) {
+  for (const key of [...linkCtx.keys()]) {
     const [a, b] = key.split('|');
-    if (a === id || b === id) {
-      links.delete(key);
-      const other = a === id ? b : a;
-      io.to(other).emit('peer-unlink', { peer: id });
-      io.to(id).emit('peer-unlink', { peer: other });
-    }
+    if (a === id || b === id) { linkCtx.delete(key); links.delete(key); pairConsent.delete(key); }
   }
-  for (const key of [...nearPairs]) {
-    const [a, b] = key.split('|');
-    if (a === id || b === id) { nearPairs.delete(key); clearConsent(a, b); }
-  }
-  nearSent.delete(id);
+  sentState.delete(id);
 }
 
 // ---------- 聊天 ----------
@@ -181,7 +182,7 @@ io.on('connection', (socket) => {
     const name = String(p.name || '').trim().slice(0, 16);
     if (!name) return ack({ ok: false, error: '請輸入名字' });
     const rejoin = users.has(socket.id);
-    if (rejoin) dropLinks(socket.id);
+    if (rejoin) forget(socket.id);
     const [x, y] = pickSpawn();
     const u = {
       id: socket.id, name,
@@ -190,7 +191,7 @@ io.on('connection', (socket) => {
       x, y, dir: 'down', cam: false, mic: false,
     };
     users.set(socket.id, u);
-    consent.set(socket.id, { auto: p.auto !== false, accept: new Set(), declined: new Set() });
+    tableState.set(socket.id, { table: 0, cam: false, mic: false, camAns: false, micAns: false });
     ack({ ok: true, self: u, users: [...users.values()], chat: chatHistory, pomo, board: board(), now: Date.now() });
     socket.broadcast.emit('user-joined', u);
     if (!rejoin) systemMsg(`👋 ${name} 進入了自習室`);
@@ -218,22 +219,25 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('user-media', { id: u.id, cam: u.cam, mic: u.mic });
   });
 
-  socket.on('set-auto', (v) => {
-    const c = consent.get(socket.id);
-    if (!c) return;
-    c.auto = !!v;
+  // 自習區／休息區：對某個人的鏡頭（kind='v'）或麥克風（kind='a'）按 ○（true）或 ✕（false）
+  socket.on('pair', (m) => {
+    if (!m || typeof m.peer !== 'string' || !users.has(socket.id)) return;
+    const key = pairKey(socket.id, m.peer);
+    const ctx = linkCtx.get(key);
+    if (!ctx || ctx === 'table') return;
+    const kind = m.kind === 'a' ? 'a' : 'v';
+    if (ctx === 'lounge' && kind === 'a') return; // 休息區語音本來就是開的
+    const pc = pairConsent.get(key) || { v: {}, a: {} };
+    pc[kind][socket.id] = m.value === true;
+    pairConsent.set(key, pc);
     recompute();
   });
-  socket.on('call', (pid) => {
-    const c = consent.get(socket.id);
-    if (!c || typeof pid !== 'string') return;
-    c.accept.add(pid); c.declined.delete(pid);
-    recompute();
-  });
-  socket.on('hangup', (pid) => {
-    const c = consent.get(socket.id);
-    if (!c || typeof pid !== 'string') return;
-    c.accept.delete(pid); c.declined.add(pid);
+  // 討論桌：鏡頭／麥克風分開選
+  socket.on('table-media', (m) => {
+    const ts = tableState.get(socket.id);
+    if (!ts || !ts.table || !m) return;
+    if ('cam' in m) { ts.cam = !!m.cam; ts.camAns = true; }
+    if ('mic' in m) { ts.mic = !!m.mic; ts.micAns = true; }
     recompute();
   });
 
@@ -281,8 +285,8 @@ io.on('connection', (socket) => {
     const u = me();
     if (!u) return;
     users.delete(socket.id);
-    dropLinks(socket.id);
-    consent.delete(socket.id);
+    forget(socket.id);
+    tableState.delete(socket.id);
     recompute();
     io.emit('user-left', { id: socket.id });
     systemMsg(`🚪 ${u.name} 離開了自習室`);
