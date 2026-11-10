@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>像素自習室</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="join" class="overlay">
+    <div class="card">
+      <h1>📚 像素自習室</h1>
+      <p class="sub">走近朋友就會自動接通視訊</p>
+      <canvas id="preview" width="64" height="64"></canvas>
+      <label>名字<input id="name" maxlength="16" placeholder="例如：Keita"></label>
+      <div class="label">衣服顏色</div>
+      <div id="colors" class="swatches"></div>
+      <div class="label">髮色</div>
+      <div id="hairs" class="swatches"></div>
+      <label id="pwWrap" hidden>房間密碼<input id="pw" type="password"></label>
+      <button id="joinBtn" class="primary">進入自習室</button>
+      <p id="joinErr" class="err"></p>
+      <p class="hint">自習區要互相邀請才會開視訊；討論區走到桌邊可以選要不要開鏡頭和麥克風；休息區靠近就能直接聊天。</p>
+    </div>
+  </div>
+
+  <div id="app" hidden>
+    <header>
+      <span class="title">📚<span class="tt"> 像素自習室</span></span>
+      <span id="zone" class="zone"></span>
+      <span class="spacer"></span>
+      <button id="settingsBtn" title="裝置設定與測試">⚙️<span class="lbl"> 裝置設定</span></button>
+      <button id="camBtn" title="總開關：停用後任何情況都不會開鏡頭">📷 鏡頭：待命</button>
+      <button id="micBtn" title="總開關：停用後任何情況都不會開麥克風">🎤 麥克風：待命</button>
+    </header>
+    <main>
+      <section id="stage">
+        <div id="videos"></div>
+        <canvas id="game"></canvas>
+        <div id="dpad">
+          <button data-dir="up" class="up">▲</button>
+          <button data-dir="left" class="left">◀</button>
+          <button data-dir="right" class="right">▶</button>
+          <button data-dir="down" class="down">▼</button>
+        </div>
+        <div id="bubbles"></div>
+        <div id="prompt"></div>
+        <button id="unlock" hidden>🔊 點這裡開啟聲音</button>
+        <div id="help">方向鍵／WASD 移動・Enter 聊天</div>
+      </section>
+      <aside>
+        <div class="panel">
+          <h2>🍅 共同番茄鐘</h2>
+          <div id="pomoPhase">尚未開始</div>
+          <div id="pomoTime">--:--</div>
+          <div class="row">
+            <label>專注 <input id="pomoFocus" type="number" value="25" min="1" max="120"> 分</label>
+            <label>休息 <input id="pomoBreak" type="number" value="5" min="1" max="60"> 分</label>
+          </div>
+          <div class="row">
+            <button id="pomoStart" class="primary">開始</button>
+            <button id="pomoSkip">跳過</button>
+            <button id="pomoStop">停止</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>🏆 今日自習時間</h2>
+          <ol id="board"></ol>
+        </div>
+        <div class="panel chat">
+          <h2>💬 聊天室</h2>
+          <div id="messages"></div>
+          <form id="chatForm">
+            <input id="chatInput" maxlength="300" placeholder="輸入訊息…" autocomplete="off">
+            <button>送出</button>
+          </form>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="settings" class="overlay" hidden>
+    <div class="card settings">
+      <h1>⚙️ 裝置設定與測試</h1>
+      <section>
+        <label>🎤 麥克風（輸入）<select id="selMic"></select></label>
+        <div class="meter"><div id="micLevel"></div></div>
+        <div class="row2"><button id="micTestBtn">🎤 開始測試麥克風</button><span id="micHint" class="hint">對著麥克風說話，綠色長條會跳動</span></div>
+      </section>
+      <section>
+        <label id="spkRow">🔊 喇叭／耳機（輸出）<select id="selSpk"></select></label>
+        <p id="spkNote" class="hint" hidden>🔊 這個瀏覽器不能在網頁裡選擇輸出裝置，會使用系統目前的喇叭或耳機；要切換請到系統的音量設定。</p>
+        <div class="row2"><button id="spkTestBtn">🔊 播放測試音</button><span id="spkHint" class="hint">確認喇叭有聲音</span></div>
+      </section>
+      <section>
+        <label>📷 鏡頭<select id="selCam"></select></label>
+        <video id="camPreview" autoplay playsinline muted hidden></video>
+        <div class="row2"><button id="camTestBtn">📷 預覽鏡頭</button><span id="camHint" class="hint"></span></div>
+      </section>
+      <section>
+        <label>🔍 連線診斷（每 1.5 秒更新）</label>
+        <div id="diag"></div>
+      </section>
+      <button id="settingsClose" class="primary">完成</button>
+    </div>
+  </div>
+
+  <div id="audios" hidden></div>
+  <div id="offline" class="overlay" hidden><div class="card"><p>連線中斷，正在重新連線…</p></div></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="map.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "pixel-study-room",
+  "version": "1.0.0",
+  "description": "像素風線上自習室：走近朋友自動接通視訊",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
