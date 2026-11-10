@@ -778,11 +778,27 @@
   });
   window.addEventListener('keyup', (e) => { const d = KEYMAP[e.code]; if (d) release(d); });
   window.addEventListener('blur', () => { held.length = 0; });
+  // 手機方向鍵：長按時 iOS 可能吃掉「放開」的事件，所以多重保險，避免一直走停不下來
+  const padHeld = new Set();
+  const releasePad = () => { for (const d of padHeld) release(d); padHeld.clear(); };
   document.querySelectorAll('#dpad button').forEach((b) => {
     const d = b.dataset.dir;
-    b.addEventListener('pointerdown', (e) => { e.preventDefault(); press(d); });
-    ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => b.addEventListener(ev, () => release(d)));
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { b.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      padHeld.add(d); press(d);
+    });
+    const up = () => { padHeld.delete(d); release(d); };
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => b.addEventListener(ev, up));
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
   });
+  $('dpad').addEventListener('touchstart', (e) => e.preventDefault(), { passive: false }); // 不讓長按觸發選取／放大鏡
+  ['pointercancel', 'touchend', 'touchcancel'].forEach((ev) => window.addEventListener(ev, (e) => {
+    if (!e.touches || e.touches.length === 0) releasePad(); // 所有手指都離開螢幕 → 一定停下
+  }));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { releasePad(); held.length = 0; } });
+  window.addEventListener('blur', releasePad);
+  document.addEventListener('selectionchange', () => { if (padHeld.size) { const s = window.getSelection(); if (s) s.removeAllRanges(); } });
 
   function updateZone() {
     const me = users.get(selfId);

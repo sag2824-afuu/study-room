@@ -126,3 +126,7 @@ header button { white-space: nowrap; }
 
 #diag { font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
 #diag .dpeer { background: #f6efe3; border-radius: 8px; padding: 6px 8px; line-height: 1.6; }
+
+/* 手機：地圖和方向鍵不能被長按選取、不跳出選單 */
+#stage, #dpad, #dpad button { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+#dpad { touch-action: none; }
