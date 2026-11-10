@@ -97,10 +97,15 @@
         <video id="camPreview" autoplay playsinline muted hidden></video>
         <div class="row2"><button id="camTestBtn">📷 預覽鏡頭</button><span id="camHint" class="hint"></span></div>
       </section>
+      <section>
+        <label>🔍 連線診斷（每 1.5 秒更新）</label>
+        <div id="diag"></div>
+      </section>
       <button id="settingsClose" class="primary">完成</button>
     </div>
   </div>
 
+  <div id="audios" hidden></div>
   <div id="offline" class="overlay" hidden><div class="card"><p>連線中斷，正在重新連線…</p></div></div>
 
   <script src="/socket.io/socket.io.js"></script>

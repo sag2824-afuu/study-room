@@ -357,15 +357,25 @@
     pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: id, data: { candidate: e.candidate } }); };
     pc.ontrack = (e) => {
       ensureTile(id);
-      const v = p.video;
-      if (e.streams && e.streams[0]) { if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0]; }
-      else { if (!v.srcObject) v.srcObject = new MediaStream(); v.srcObject.addTrack(e.track); }
-      applySink(v);
-      v.play().catch(showUnlock);
+      // 聲音和畫面分開播放：聲音用獨立的 <audio>，畫面用靜音的 <video>（Safari／手機比較不會擋）
+      const el = e.track.kind === 'audio' ? p.audio : p.video;
+      el.srcObject = new MediaStream([e.track]);
+      e.track.onunmute = () => el.play().catch(showUnlock); // 對方開始送聲音／畫面時再播一次
+      el.play().catch(showUnlock);
     };
-    pc.onconnectionstatechange = () => {
-      if (p.tile) p.tile.style.opacity = pc.connectionState === 'connected' ? '1' : '.6';
+    const onState = () => {
+      const st = pc.connectionState || pc.iceConnectionState;
+      p.state = st;
+      if (p.tile) p.tile.style.opacity = st === 'connected' || st === 'completed' ? '1' : '.6';
+      refreshTile(id);
+      if (st === 'failed' && !p.warned) {
+        p.warned = true;
+        const u = users.get(id);
+        localNotice(`⚠️ 跟 ${u ? u.name : '對方'} 的連線失敗了：可能是網路之間打不通，需要設定 TURN 中繼伺服器（請看 README）`);
+      }
     };
+    pc.onconnectionstatechange = onState;
+    pc.oniceconnectionstatechange = onState;
     ensureTile(id);
     return p;
   }
@@ -407,6 +417,7 @@
     if (!p) return;
     try { p.pc.close(); } catch (_) { /* ignore */ }
     if (p.tile) p.tile.remove();
+    if (p.audio) { p.audio.srcObject = null; p.audio.remove(); }
     peers.delete(id);
   }
   function ensureTile(id) {
@@ -416,8 +427,12 @@
     tile.className = 'vtile';
     tile.style.opacity = '.6';
     const v = document.createElement('video');
-    v.autoplay = true; v.playsInline = true;
-    applySink(v);
+    v.autoplay = true; v.playsInline = true; v.muted = true;
+    const a = document.createElement('audio');
+    a.autoplay = true; a.setAttribute('playsinline', '');
+    applySink(a);
+    $('audios').append(a);
+    p.audio = a;
     const off = document.createElement('div');
     off.className = 'camoff';
     const label = document.createElement('span');
@@ -434,7 +449,8 @@
     p.tile.hidden = !flowing;
     p.tile.classList.toggle('cam-off', !(n && n.recv.v && u.cam));
     p.off.textContent = u.name.slice(0, 1);
-    p.label.textContent = (n && n.recv.a && u.mic ? '' : '🔇 ') + u.name;
+    const conn = p.state === 'failed' ? '❌ 連線失敗 ' : p.state && !['connected', 'completed'].includes(p.state) ? '⏳ ' : '';
+    p.label.textContent = conn + (n && n.recv.a && u.mic ? '' : '🔇 ') + u.name;
   }
   let selfVideo = null;
   function setupSelfTile() {
@@ -468,7 +484,7 @@
   function showUnlock() { $('unlock').hidden = false; }
   $('unlock').onclick = () => {
     $('unlock').hidden = true;
-    for (const p of peers.values()) if (p.video) p.video.play().catch(() => {});
+    for (const p of peers.values()) { if (p.audio) p.audio.play().catch(() => {}); if (p.video) p.video.play().catch(() => {}); }
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   };
 
@@ -572,8 +588,63 @@
       attachAll(); updateMediaButtons();
     } catch (_) { /* 失敗就維持原本的裝置 */ }
   }
-  $('settingsBtn').onclick = async () => { $('settings').hidden = false; await fillDevices(); };
-  $('settingsClose').onclick = () => { stopTests(); $('settings').hidden = true; };
+  // ---------- 連線診斷 ----------
+  const lastBytes = new Map();
+  async function runDiag() {
+    const box = $('diag');
+    const rows = [];
+    const yn = (ok, yes, no) => (ok ? `✅ ${yes}` : `❌ ${no}`);
+    rows.push(`<div class="drow"><b>我的麥克風</b>：${!micAllowed ? '❌ 已停用（按右上角麥克風按鈕打開）' : micTrack ? (micTrack.muted ? '⚠️ 被系統靜音了' : '✅ 使用中') : '待命（目前沒有需要開麥克風的人）'}</div>`);
+    if (!peers.size) rows.push('<div class="drow hint">目前沒有和任何人連線。走到別人旁邊後再打開這裡看看。</div>');
+    for (const [id, p] of peers) {
+      const u = users.get(id), n = linkInfo.get(id);
+      let outB = 0, inB = 0, level = 0;
+      try {
+        const st = await p.pc.getStats();
+        st.forEach((r) => {
+          if (r.kind !== 'audio' && r.mediaType !== 'audio') return;
+          if (r.type === 'outbound-rtp') outB += r.bytesSent || 0;
+          if (r.type === 'inbound-rtp') inB += r.bytesReceived || 0;
+          if (r.type === 'inbound-rtp' && typeof r.audioLevel === 'number') level = Math.max(level, r.audioLevel);
+        });
+      } catch (_) { /* ignore */ }
+      const prev = lastBytes.get(id) || { outB, inB };
+      lastBytes.set(id, { outB, inB });
+      const sending = outB > prev.outB, receiving = inB > prev.inB;
+      let route = '';
+      try {
+        const st2 = await p.pc.getStats();
+        let pairId = null;
+        st2.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId; });
+        st2.forEach((r) => { if (!pairId && r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pairId = r.id; });
+        const pairR = pairId && st2.get(pairId);
+        const loc = pairR && st2.get(pairR.localCandidateId);
+        if (loc) route = loc.candidateType === 'relay' ? '（經由中繼伺服器）' : loc.candidateType === 'host' ? '（同一個網路直連）' : '（跨網路直連）';
+      } catch (_) { /* ignore */ }
+      const sender = p.pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+      const state = p.pc.connectionState || p.pc.iceConnectionState;
+      rows.push(`<div class="dpeer"><div><b>${u ? u.name.replace(/[<>&]/g, '') : '…'}</b>　連線：${state === 'connected' ? '✅ 已連上' + route : state === 'failed' ? '❌ 連線失敗（' + (config.turn ? '中繼伺服器也連不上' : '尚未設定 TURN 中繼伺服器') + '）' : '⏳ ' + state}</div>
+        <div>我送出聲音：${!(n && n.send.a) ? '－ 這裡的規則目前不用送聲音' : yn(sender && sending, '有在送', '沒有送出（確認麥克風是「使用中」）')}</div>
+        <div>收到對方聲音：${!(n && n.recv.a) ? '－ 對方目前沒有開聲音' : yn(receiving, '有收到' + (level > 0.01 ? '（有音量）' : '（目前很安靜）'), '沒收到（請對方確認他的麥克風）')}</div>
+        <div>播放聲音：${!(n && n.recv.a) ? '－' : p.audio && !p.audio.paused ? '✅ 播放中' : '❌ 被瀏覽器擋住 → 點畫面上的「點這裡開啟聲音」'}</div></div>`);
+      if (p.audio && p.audio.paused && n && n.recv.a) showUnlock();
+    }
+    box.innerHTML = rows.join('');
+  }
+  let diagTimer = 0;
+  $('settingsBtn').onclick = async () => {
+    $('settings').hidden = false; await fillDevices();
+    runDiag(); diagTimer = setInterval(runDiag, 1500);
+  };
+  $('settingsClose').onclick = () => { stopTests(); clearInterval(diagTimer); $('settings').hidden = true; };
+  // 每 3 秒檢查一次：有聲音進來卻沒在播放，就重新播放
+  setInterval(() => {
+    for (const [id, p] of peers) {
+      const n = linkInfo.get(id);
+      if (p.audio && p.audio.paused && n && n.recv.a) p.audio.play().catch(showUnlock);
+      if (p.video && p.video.paused && n && n.recv.v) p.video.play().catch(() => {});
+    }
+  }, 3000);
   $('micTestBtn').onclick = () => (testMic ? stopTests() : startMicTest());
   $('camTestBtn').onclick = () => (testCam ? stopTests() : startCamTest());
   $('spkTestBtn').onclick = playTestTone;
@@ -589,7 +660,7 @@
   };
   $('selSpk').onchange = () => {
     devPref.spk = $('selSpk').value; store.set('dev-spk', devPref.spk);
-    for (const p of peers.values()) applySink(p.video);
+    for (const p of peers.values()) applySink(p.audio);
   };
 
   // ---------- 相機 / 麥克風 ----------
@@ -775,9 +846,9 @@
     if (me) {
       for (const [id, p] of peers) {
         const u = users.get(id);
-        if (!u || !p.video) continue;
+        if (!u || !p.audio) continue;
         const d = Math.hypot(u.x - me.x, u.y - me.y);
-        p.video.volume = Math.max(0.3, Math.min(1, 1 - (d - 1) / 4));
+        p.audio.volume = Math.max(0.3, Math.min(1, 1 - (d - 1) / 4));
       }
     }
     placeBubbles();

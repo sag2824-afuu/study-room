@@ -123,3 +123,6 @@ header button { white-space: nowrap; }
 #micLevel { height: 100%; width: 0%; background: linear-gradient(90deg, #5bbf6a, #e8c63a 75%, #e05a5a); transition: width .05s; }
 #camPreview { width: 100%; max-height: 200px; object-fit: cover; border-radius: 10px; background: #111; transform: scaleX(-1); }
 #unlock { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5; font-size: 18px; padding: 12px 20px; background: #d9773b; color: #fff; border-color: #c4642a; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+
+#diag { font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+#diag .dpeer { background: #f6efe3; border-radius: 8px; padding: 6px 8px; line-height: 1.6; }

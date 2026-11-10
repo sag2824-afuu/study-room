@@ -20,19 +20,40 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/config', (req, res) => {
-  const iceServers = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ];
+// TURN 中繼伺服器（不同網路連不上時需要）
+// 方法一：Metered（免費）→ 設定 METERED_DOMAIN 和 METERED_API_KEY
+// 方法二：自己的 TURN → 設定 TURN_URL、TURN_USERNAME、TURN_CREDENTIAL
+let meteredCache = { at: 0, servers: null };
+async function turnServers() {
+  if (process.env.METERED_DOMAIN && process.env.METERED_API_KEY) {
+    if (meteredCache.servers && Date.now() - meteredCache.at < 3600e3) return meteredCache.servers;
+    try {
+      const domain = process.env.METERED_DOMAIN.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      const r = await fetch(`https://${domain}/api/v1/turn/credentials?apiKey=${encodeURIComponent(process.env.METERED_API_KEY)}`);
+      if (r.ok) {
+        const list = await r.json();
+        if (Array.isArray(list) && list.length) { meteredCache = { at: Date.now(), servers: list }; return list; }
+      }
+      console.warn('Metered TURN 取得失敗：', r.status);
+    } catch (e) { console.warn('Metered TURN 取得失敗：', e.message); }
+    return meteredCache.servers || [];
+  }
   if (process.env.TURN_URL) {
-    iceServers.push({
+    return [{
       urls: process.env.TURN_URL.split(','),
       username: process.env.TURN_USERNAME || '',
       credential: process.env.TURN_CREDENTIAL || '',
-    });
+    }];
   }
-  res.json({ iceServers, needPassword: !!ROOM_PASSWORD });
+  return [];
+}
+app.get('/config', async (req, res) => {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    ...(await turnServers()),
+  ];
+  res.json({ iceServers, needPassword: !!ROOM_PASSWORD, turn: iceServers.some((s) => String(s.urls).includes('turn')) });
 });
 
 // ---------- 狀態 ----------
