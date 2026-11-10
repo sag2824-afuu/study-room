@@ -5,7 +5,7 @@ button { font: inherit; border: 1px solid #c9b79f; background: #fffaf2; color: #
 button:hover { background: #fff3df; }
 button.primary { background: #d9773b; border-color: #c4642a; color: #fff; }
 button.primary:hover { background: #c96a30; }
-button.off { background: #e9d9d3; color: #9a5a4a; text-decoration: line-through; }
+button.off { background: #eee3d1; color: #8a7565; }
 input { font: inherit; border: 1px solid #c9b79f; border-radius: 8px; padding: 6px 8px; background: #fff; }
 
 .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(59, 47, 39, .55); z-index: 50; }
@@ -84,3 +84,6 @@ aside { width: 320px; flex: none; display: flex; flex-direction: column; gap: 10
 .near.ringing { outline: 3px solid #f0a33a; animation: ring 1s ease-in-out infinite; }
 @keyframes ring { 50% { outline-color: transparent; } }
 @media (pointer: coarse) { #nearby { left: auto; right: 10px; transform: none; max-width: calc(100% - 180px); } }
+
+.vtile .camoff { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; font-size: 40px; font-weight: 700; color: #fff; background: #5a4a3f; }
+.vtile.cam-off .camoff { display: flex; }

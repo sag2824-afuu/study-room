@@ -20,7 +20,7 @@
       <label id="pwWrap" hidden>房間密碼<input id="pw" type="password"></label>
       <button id="joinBtn" class="primary">進入自習室</button>
       <p id="joinErr" class="err"></p>
-      <p class="hint">會詢問相機與麥克風權限。拒絕也能進入，只是別人看不到、聽不到你。</p>
+      <p class="hint">進入時相機和麥克風預設是關閉的，需要時再按上方的按鈕打開。</p>
     </div>
   </div>
 
@@ -30,8 +30,8 @@
       <span id="zone" class="zone"></span>
       <span class="spacer"></span>
       <button id="autoBtn" title="關掉後，走近別人時要按「接通」才會開始通話">🔔 自動接通：開</button>
-      <button id="camBtn">📷 相機</button>
-      <button id="micBtn">🎤 麥克風</button>
+      <button id="camBtn" class="off">📷 相機：關</button>
+      <button id="micBtn" class="off">🎤 麥克風：關</button>
     </header>
     <main>
       <section id="stage">

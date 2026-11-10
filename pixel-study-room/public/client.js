@@ -21,8 +21,8 @@
   };
   let selfId = null;
   let joined = false;
-  let localStream = null;
-  let mediaTried = false;
+  let camTrack = null; // 預設關閉，按按鈕才開
+  let micTrack = null;
   let clockOffset = 0;
   let pomo = { phase: 'idle', endsAt: 0, round: 0 };
   let boardData = [];
@@ -170,20 +170,6 @@
   drawPreview();
   fetch('/config').then((r) => r.json()).then((c) => { config = c; $('pwWrap').hidden = !c.needPassword; }).catch(() => {});
 
-  async function startMedia() {
-    if (mediaTried) return;
-    mediaTried = true;
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } },
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-    } catch (_) {
-      try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (_) { localStream = null; }
-    }
-  }
-
   $('joinBtn').onclick = async () => {
     const name = $('name').value.trim();
     if (!name) { $('joinErr').textContent = '請輸入名字'; return; }
@@ -192,7 +178,6 @@
     store.set('name', name); store.set('color', profile.color); store.set('hair', profile.hair);
     $('joinBtn').disabled = true; $('joinErr').textContent = '';
     ensureAudio();
-    await startMedia();
     sendJoin();
   };
   $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('joinBtn').click(); });
@@ -304,8 +289,11 @@
     const pc = new RTCPeerConnection({ iceServers: config.iceServers });
     p = { pc, pending: [], tile: null, video: null };
     peers.set(id, p);
-    if (localStream) localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
-    else if (initiator) { pc.addTransceiver('audio', { direction: 'recvonly' }); pc.addTransceiver('video', { direction: 'recvonly' }); }
+    if (initiator) {
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
+      pc.addTransceiver('video', { direction: 'sendrecv' });
+      attachTracks(p);
+    }
     pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: id, data: { candidate: e.candidate } }); };
     pc.ontrack = (e) => {
       ensureTile(id);
@@ -341,6 +329,10 @@
       if (data.sdp) {
         if (!p) { if (data.sdp.type !== 'offer') return; p = getPeer(from, false); }
         await p.pc.setRemoteDescription(data.sdp);
+        if (data.sdp.type === 'offer') {
+          p.pc.getTransceivers().forEach((t) => { t.direction = 'sendrecv'; });
+          attachTracks(p);
+        }
         for (const c of p.pending) await p.pc.addIceCandidate(c).catch(() => {});
         p.pending = [];
         if (data.sdp.type === 'offer') {
@@ -369,37 +361,96 @@
     tile.style.opacity = '.6';
     const v = document.createElement('video');
     v.autoplay = true; v.playsInline = true;
+    const off = document.createElement('div');
+    off.className = 'camoff';
     const label = document.createElement('span');
-    label.textContent = (users.get(id) || {}).name || '…';
-    tile.append(v, label);
+    tile.append(v, off, label);
     $('videos').append(tile);
-    p.tile = tile; p.video = v;
+    p.tile = tile; p.video = v; p.label = label; p.off = off;
+    refreshTile(id);
   }
+  function refreshTile(id) {
+    const p = peers.get(id), u = users.get(id);
+    if (!p || !p.tile || !u) return;
+    p.tile.classList.toggle('cam-off', !u.cam);
+    p.off.textContent = u.name.slice(0, 1);
+    p.label.textContent = (u.mic ? '' : '🔇 ') + u.name;
+  }
+  let selfVideo = null;
   function setupSelfTile() {
     const tile = document.createElement('div');
     tile.className = 'vtile self';
+    tile.hidden = true;
     const v = document.createElement('video');
     v.autoplay = true; v.playsInline = true; v.muted = true;
     const label = document.createElement('span');
     label.textContent = '我';
     tile.append(v, label);
-    if (localStream && localStream.getVideoTracks().length) { v.srcObject = localStream; v.play().catch(() => {}); }
-    else tile.hidden = true;
     $('videos').prepend(tile);
+    selfVideo = v;
   }
 
-  // ---------- 相機 / 麥克風 ----------
-  function updateMediaButtons() {
-    const vt = localStream && localStream.getVideoTracks()[0];
-    const at = localStream && localStream.getAudioTracks()[0];
-    $('camBtn').classList.toggle('off', !vt || !vt.enabled);
-    $('micBtn').classList.toggle('off', !at || !at.enabled);
-    $('camBtn').disabled = !vt; $('micBtn').disabled = !at;
-    $('camBtn').title = vt ? '' : '沒有可用的相機（或未允許權限）';
-    $('micBtn').title = at ? '' : '沒有可用的麥克風（或未允許權限）';
+  // ---------- 相機 / 麥克風（預設關閉） ----------
+  function attachTracks(p) {
+    for (const t of p.pc.getTransceivers()) {
+      const kind = t.receiver && t.receiver.track && t.receiver.track.kind;
+      const track = kind === 'video' ? camTrack : kind === 'audio' ? micTrack : null;
+      if (t.sender && t.sender.track !== track) t.sender.replaceTrack(track).catch(() => {});
+    }
   }
-  $('camBtn').onclick = () => { const t = localStream && localStream.getVideoTracks()[0]; if (t) { t.enabled = !t.enabled; updateMediaButtons(); } };
-  $('micBtn').onclick = () => { const t = localStream && localStream.getAudioTracks()[0]; if (t) { t.enabled = !t.enabled; updateMediaButtons(); } };
+  function attachAll() { for (const p of peers.values()) attachTracks(p); }
+  function updateMediaButtons() {
+    $('camBtn').textContent = camTrack ? '📷 相機：開' : '📷 相機：關';
+    $('micBtn').textContent = micTrack ? '🎤 麥克風：開' : '🎤 麥克風：關';
+    $('camBtn').classList.toggle('off', !camTrack);
+    $('micBtn').classList.toggle('off', !micTrack);
+    if (selfVideo) {
+      selfVideo.parentElement.hidden = !camTrack;
+      selfVideo.srcObject = camTrack ? new MediaStream([camTrack]) : null;
+      if (camTrack) selfVideo.play().catch(() => {});
+    }
+    if (joined) socket.emit('media-state', { cam: !!camTrack, mic: !!micTrack });
+  }
+  function localNotice(text) { addMsg({ system: true, text, ts: Date.now() }); }
+  async function toggleMedia(kind) {
+    const isCam = kind === 'video';
+    const cur = isCam ? camTrack : micTrack;
+    if (cur) {
+      cur.onended = null; cur.stop();
+      if (isCam) camTrack = null; else micTrack = null;
+    } else {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { localNotice('⚠️ 這個瀏覽器不支援相機／麥克風（請確認網址是 https 開頭）'); return; }
+      try {
+        const constraints = isCam
+          ? { video: { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } } }
+          : { audio: { echoCancellation: true, noiseSuppression: true } };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const track = isCam ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0];
+        track.onended = () => { // 被系統或其他分頁中斷時，自動變回關閉
+          if (isCam && camTrack === track) camTrack = null;
+          if (!isCam && micTrack === track) micTrack = null;
+          attachAll(); updateMediaButtons();
+          localNotice(isCam ? '⚠️ 相機被中斷了，可以再按一次「相機」重新開啟' : '⚠️ 麥克風被中斷了，可以再按一次「麥克風」重新開啟');
+        };
+        if (isCam) camTrack = track; else micTrack = track;
+      } catch (e) {
+        localNotice(isCam
+          ? '⚠️ 無法開啟相機：請允許瀏覽器使用相機，並關掉其他正在用相機的分頁或 App'
+          : '⚠️ 無法開啟麥克風：請允許瀏覽器使用麥克風');
+        return;
+      }
+    }
+    attachAll();
+    updateMediaButtons();
+  }
+  $('camBtn').onclick = () => toggleMedia('video');
+  $('micBtn').onclick = () => toggleMedia('audio');
+  socket.on('user-media', ({ id, cam, mic }) => {
+    const u = users.get(id);
+    if (!u) return;
+    u.cam = cam; u.mic = mic;
+    refreshTile(id);
+  });
 
   // ---------- 移動 ----------
   const KEYMAP = { ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down', ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right' };

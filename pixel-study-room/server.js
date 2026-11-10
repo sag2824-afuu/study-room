@@ -187,7 +187,7 @@ io.on('connection', (socket) => {
       id: socket.id, name,
       color: HEX.test(p.color) ? p.color : '#4a90d9',
       hair: HEX.test(p.hair) ? p.hair : '#2b1d14',
-      x, y, dir: 'down',
+      x, y, dir: 'down', cam: false, mic: false,
     };
     users.set(socket.id, u);
     consent.set(socket.id, { auto: p.auto !== false, accept: new Set(), declined: new Set() });
@@ -209,6 +209,13 @@ io.on('connection', (socket) => {
     u.x = x; u.y = y; u.dir = dir;
     socket.broadcast.emit('user-moved', { id: u.id, x, y, dir });
     recompute();
+  });
+
+  socket.on('media-state', (m) => {
+    const u = me();
+    if (!u || !m) return;
+    u.cam = !!m.cam; u.mic = !!m.mic;
+    socket.broadcast.emit('user-media', { id: u.id, cam: u.cam, mic: u.mic });
   });
 
   socket.on('set-auto', (v) => {
