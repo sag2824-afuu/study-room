@@ -21,10 +21,39 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 // TURN 中繼伺服器（不同網路連不上時需要）
-// 方法一：Metered（免費）→ 設定 METERED_DOMAIN 和 METERED_API_KEY
-// 方法二：自己的 TURN → 設定 TURN_URL、TURN_USERNAME、TURN_CREDENTIAL
+// 方法一：Cloudflare（每月 1,000 GB 免費，推薦）→ 設定 CF_TURN_KEY_ID 和 CF_TURN_API_TOKEN
+// 方法二：Metered（每月 20 GB 免費）→ 設定 METERED_DOMAIN 和 METERED_API_KEY
+// 方法三：自己的 TURN → 設定 TURN_URL、TURN_USERNAME、TURN_CREDENTIAL
 let meteredCache = { at: 0, servers: null };
+let cfCache = { at: 0, servers: null };
+async function cloudflareTurn() {
+  if (cfCache.servers && Date.now() - cfCache.at < 12 * 3600e3) return cfCache.servers; // 憑證有效 24 小時，每 12 小時換一次
+  try {
+    const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(process.env.CF_TURN_KEY_ID.trim())}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.CF_TURN_API_TOKEN.trim()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: 86400 }),
+    });
+    if (r.ok) {
+      const data = await r.json();
+      let list = data.iceServers;
+      if (list && !Array.isArray(list)) list = [list];
+      if (Array.isArray(list) && list.length) {
+        // 瀏覽器會擋 53 埠，先過濾掉（Cloudflare 文件的建議）
+        list = list.map((sv) => ({ ...sv, urls: [].concat(sv.urls).filter((u) => !/:53(\?|$)/.test(u)) })).filter((sv) => sv.urls.length);
+        cfCache = { at: Date.now(), servers: list };
+        return list;
+      }
+    }
+    console.warn('Cloudflare TURN 取得失敗：', r.status, (await r.text().catch(() => '')).slice(0, 200));
+  } catch (e) { console.warn('Cloudflare TURN 取得失敗：', e.message); }
+  return cfCache.servers || [];
+}
 async function turnServers() {
+  if (process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN) {
+    const list = await cloudflareTurn();
+    if (list.length) return list;
+  }
   if (process.env.METERED_DOMAIN && process.env.METERED_API_KEY) {
     if (meteredCache.servers && Date.now() - meteredCache.at < 3600e3) return meteredCache.servers;
     try {

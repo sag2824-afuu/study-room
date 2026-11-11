@@ -775,6 +775,7 @@
     }
     $('shareBtn').innerHTML = screenTrack ? '⏹ <span class="lbl">停止分享</span>' : '🖥️ <span class="lbl">分享螢幕</span>';
     $('shareBtn').className = screenTrack ? 'live' : '';
+    $('switchBtn').hidden = !screenTrack;
     if (selfScreen) {
       selfScreen.parentElement.hidden = !screenTrack;
       if (screenTrack && (!selfScreen.srcObject || selfScreen.srcObject.getVideoTracks()[0] !== screenTrack)) {
@@ -837,7 +838,7 @@
   }
   function syncToolbar() {
     const set = (id, src) => { const a = $(id), b = $(src); a.innerHTML = b.innerHTML; a.className = b.className; a.hidden = b.hidden; };
-    set('tMic', 'micBtn'); set('tCam', 'camBtn'); set('tShare', 'shareBtn');
+    set('tMic', 'micBtn'); set('tCam', 'camBtn'); set('tShare', 'shareBtn'); set('tSwitch', 'switchBtn');
   }
   $('tMic').onclick = () => $('micBtn').click();
   $('tCam').onclick = () => $('camBtn').click();
@@ -848,20 +849,42 @@
   // ---------- 螢幕分享 ----------
   let screenTrack = null;
   const canShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-  async function toggleShare() {
+  // 讓瀏覽器跳出選擇視窗：整個螢幕／某個視窗／某個分頁
+  async function pickScreen() {
+    const s = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 10, max: 15 }, displaySurface: 'monitor' },
+      audio: false,
+      selfBrowserSurface: 'exclude',   // 不要把自習室這個分頁列進去（避免畫面無限套娃）
+      surfaceSwitching: 'include',     // Chrome：分享中可以直接切換分頁
+      monitorTypeSurfaces: 'include',  // 一定要提供「整個螢幕」選項
+    });
+    const t = s.getVideoTracks()[0];
+    if ('contentHint' in t) t.contentHint = 'detail';
+    t.onended = () => { if (screenTrack === t) { screenTrack = null; attachAll(); updateMediaButtons(); } }; // 從瀏覽器的「停止分享」按掉
+    return t;
+  }
+  async function startShare(switching) {
+    $('sharePick').hidden = true;
+    try {
+      const t = await pickScreen();
+      const old = screenTrack;
+      screenTrack = t;
+      if (old) stopTrack(old);
+      attachAll(); updateMediaButtons();
+      if (!switching && !linkState.peers.some((n) => n.send.s)) localNotice('🖥️ 已開始分享螢幕。目前還沒有人同意接收，對方按 🖥️ 的 ○（討論桌要雙方都開放螢幕分享）後就會看到。');
+    } catch (_) { /* 使用者取消選擇 */ }
+  }
+  function toggleShare() {
     if (screenTrack) { stopTrack(screenTrack); screenTrack = null; attachAll(); updateMediaButtons(); return; }
     if (!canShare) { localNotice('⚠️ 這個裝置的瀏覽器不支援分享螢幕（手機和平板通常不行，請用電腦）'); return; }
-    try {
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 10, max: 15 } }, audio: false });
-      screenTrack = s.getVideoTracks()[0];
-      if ('contentHint' in screenTrack) screenTrack.contentHint = 'detail';
-      screenTrack.onended = () => { screenTrack = null; attachAll(); updateMediaButtons(); }; // 從瀏覽器的「停止分享」按掉
-      attachAll(); updateMediaButtons();
-      if (!linkState.peers.some((n) => n.send.s)) localNotice('🖥️ 已開始分享螢幕。目前還沒有人同意接收，對方按 🖥️ 的 ○（討論桌要雙方都開放螢幕分享）後就會看到。');
-    } catch (_) { /* 使用者取消 */ }
+    $('sharePick').hidden = false; // 先說明，再讓使用者按下按鈕跳出瀏覽器的選擇視窗
   }
   $('shareBtn').onclick = toggleShare;
   $('shareBtn').hidden = !canShare;
+  $('sharePickGo').onclick = () => startShare(false);
+  $('sharePickCancel').onclick = () => { $('sharePick').hidden = true; };
+  $('switchBtn').onclick = () => startShare(true);
+  $('tSwitch').onclick = () => startShare(true);
 
   $('camBtn').onclick = () => { camAllowed = !camAllowed; syncMedia(); };
   $('micBtn').onclick = () => { micAllowed = !micAllowed; syncMedia(); };

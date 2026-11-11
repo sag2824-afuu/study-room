@@ -81,18 +81,31 @@
 
 ---
 
-## 🌐 設定 TURN 中繼伺服器（朋友在不同網路時建議設定）
+## 🌐 設定 TURN 中繼伺服器（朋友在不同網路時需要）
 
-兩個人在不同網路（例如一個在家、一個用手機網路或學校網路）時，有時候會因為網路之間打不通而**聽不到、看不到對方**。這時候需要一個「中繼伺服器」幫忙轉送。Metered 提供免費額度：
+兩個人在不同網路（例如一個在家、一個在學校或用手機網路）時，有時候會因為網路之間打不通而**聽不到、看不到對方**（視訊格子會顯示「❌ 連線失敗」）。這時候需要一個「中繼伺服器」幫忙轉送。程式會先試直接連線，連不上才用中繼，所以只有需要時才會用到流量。
 
-1. 到 https://dashboard.metered.ca/signup 註冊免費帳號
-2. 登入後會有一個 App 網域，例如 `xxxx.metered.live`；在 Dashboard 找到 **API Key** 並複製
-3. 到 Render → 你的 study-room → **Environment** → 新增兩個環境變數：
-   - `METERED_DOMAIN` = `xxxx.metered.live`
-   - `METERED_API_KEY` = 剛剛複製的 API Key
-4. 按 Save，Render 會自動重新部署
+### 推薦：Cloudflare（每月 1,000 GB 免費，不用信用卡）
 
-設定完成後，在 ⚙️ →「🔍 連線診斷」可以看到連線方式；顯示「經由中繼伺服器」就代表有用到它。
+1. 到 https://dash.cloudflare.com/sign-up 註冊帳號
+2. 登入後，左邊選單找到 **Realtime**（可能在「Media」底下）→ **TURN Server** → **Create**，名稱隨便取（例如 `study-room`）
+3. 建立後會顯示兩個值，**馬上複製**（Token 只會顯示一次）：
+   - **Turn Token ID**
+   - **API Token**
+4. 到 Render → 你的 study-room → **Environment** → 新增兩個環境變數：
+   - `CF_TURN_KEY_ID` = Turn Token ID
+   - `CF_TURN_API_TOKEN` = API Token
+5. 按 Save，Render 會自動重新部署
+
+### 備用：Metered（每月 20 GB 免費）
+
+1. 到 https://dashboard.metered.ca/signup 註冊
+2. 複製 App 網域（`xxxx.metered.live`）和 API Key
+3. 在 Render 新增 `METERED_DOMAIN` 和 `METERED_API_KEY`
+
+兩個都設定的話會優先用 Cloudflare，Cloudflare 出問題時自動改用 Metered。
+
+設定完成後，在 ⚙️ →「🔍 連線診斷」可以看到連線方式；遇到要中繼的情況會顯示「經由中繼伺服器」。建議同時設定 `ROOM_PASSWORD`（房間密碼），避免陌生人進來用掉額度。
 
 ## 常見問題
 

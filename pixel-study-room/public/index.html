@@ -31,6 +31,7 @@
       <span class="spacer"></span>
       <button id="settingsBtn" title="裝置設定與測試">⚙️<span class="lbl"> 裝置設定</span></button>
       <button id="shareBtn" title="分享你的螢幕給已同意的人">🖥️ <span class="lbl">分享螢幕</span></button>
+      <button id="switchBtn" hidden title="換成分享別的螢幕、視窗或分頁">🔄 <span class="lbl">換畫面</span></button>
       <button id="camBtn" title="總開關：停用後任何情況都不會開鏡頭">📷 鏡頭：待命</button>
       <button id="micBtn" title="總開關：停用後任何情況都不會開麥克風">🎤 麥克風：待命</button>
     </header>
@@ -49,6 +50,7 @@
           <button id="tMic"></button>
           <button id="tCam"></button>
           <button id="tShare"></button>
+          <button id="tSwitch" hidden></button>
           <button id="tSettings">⚙️ <span class="lbl">設定</span></button>
           <button id="tMap">🗺️ <span class="lbl">大地圖</span></button>
         </div>
@@ -115,6 +117,20 @@
     </div>
   </div>
 
+  <div id="sharePick" class="overlay" hidden>
+    <div class="card">
+      <h1>🖥️ 分享螢幕</h1>
+      <p>按下「選擇要分享的畫面」後，瀏覽器會跳出選擇視窗，可以選：</p>
+      <ul class="picklist">
+        <li><b>整個螢幕</b>：有多個螢幕時可以選要哪一個</li>
+        <li><b>某個視窗</b>：只分享一個 App，例如 PDF 或 Word</li>
+        <li><b>某個分頁</b>：只分享瀏覽器的其中一個分頁（Chrome／Edge）</li>
+      </ul>
+      <p class="hint">分享中可以按「🔄 換畫面」改分享別的東西。Mac 第一次使用時，可能要到「系統設定 → 隱私權與安全性 → 螢幕錄製」允許瀏覽器。</p>
+      <button id="sharePickGo" class="primary">選擇要分享的畫面</button>
+      <button id="sharePickCancel">取消</button>
+    </div>
+  </div>
   <div id="audios" hidden></div>
   <div id="offline" class="overlay" hidden><div class="card"><p>連線中斷，正在重新連線…</p></div></div>
 

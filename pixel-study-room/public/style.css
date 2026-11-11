@@ -208,3 +208,6 @@ main.side-closed aside { display: none; }
   main.side-closed #stage { flex: 1 1 100%; }
   #stage.meeting #sideToggle { bottom: 66px; right: auto; left: 8px; }
 }
+
+.picklist { margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.7; }
+.card p { margin: 0; font-size: 14px; }
