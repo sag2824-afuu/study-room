@@ -186,7 +186,7 @@
   const socket = io();
 
   function sendJoin() {
-    socket.emit('join', profile, (res) => {
+    socket.emit('join', { ...profile, today: loadToday() }, (res) => {
       $('joinBtn').disabled = false;
       if (!res || !res.ok) {
         $('joinErr').textContent = (res && res.error) || '無法加入';
@@ -227,11 +227,20 @@
   });
   socket.on('user-left', ({ id }) => { users.delete(id); closePeer(id); });
   socket.on('correct', ({ x, y }) => { const me = users.get(selfId); if (me) { me.x = x; me.y = y; updateZone(); } });
-  socket.on('chat', addMsg);
+  socket.on('chat', (m) => {
+    addMsg(m);
+    if (!sideOpen && !m.system) { unread++; renderSideTab(); }
+    const u = m.id && users.get(m.id);
+    if (u) { u.say = { text: m.text, until: performance.now() + 6000 }; u.typingUntil = 0; } // 頭上顯示訊息 6 秒
+  });
+  socket.on('user-typing', ({ id, typing }) => {
+    const u = users.get(id);
+    if (u) u.typingUntil = typing ? performance.now() + 6000 : 0;
+  });
   socket.on('pomo', (p) => setPomo(p, false));
   socket.on('board', setBoard);
   // ---------- 連線狀態（自習區／討論桌／休息區） ----------
-  const kindsOf = (n) => (n.ctx === 'quiet' ? ['v', 'a'] : n.ctx === 'lounge' ? ['v'] : []);
+  const kindsOf = (n) => (n.ctx === 'quiet' ? ['v', 'a', 's'] : n.ctx === 'lounge' ? ['v', 's'] : []);
   const isInvite = (n) => kindsOf(n).some((k) => n.theirs[k] === true && n.mine[k] === null);
   function applyLinks(st) {
     const prevInvites = new Set([...linkInfo.values()].filter(isInvite).map((n) => n.id));
@@ -266,7 +275,7 @@
       const segs = [];
       for (const k of kindsOf(n)) {
         if (n.mine[k] === false) continue; // 按過 ✕ 就不再顯示，走開再回來會重新詢問
-        const icon = k === 'v' ? '📷' : '🎤';
+        const icon = k === 'v' ? '📷' : k === 'a' ? '🎤' : '🖥️';
         const seg = document.createElement('span');
         seg.className = 'seg';
         const t = document.createElement('span');
@@ -304,8 +313,9 @@
     for (const [id, el] of bubbles) {
       const u = users.get(id);
       if (!u) continue;
-      el.style.left = (ox + (u.rx * T + T / 2) * sc) + 'px';
-      el.style.top = (oy + (u.ry * T - 20) * sc) + 'px';
+      const half = el.offsetWidth / 2 + 4; // 泡泡不要超出畫面左右邊緣
+      el.style.left = Math.min(sr.width - half, Math.max(half, ox + (u.rx * T + T / 2) * sc)) + 'px';
+      el.style.top = (oy + (u.ry * T + T + 2) * sc) + 'px'; // 放在腳下，頭上留給對話框
     }
   }
 
@@ -321,7 +331,7 @@
     h.className = 'th';
     h.textContent = `🪑 討論桌 ${t.id}・` + (t.members.length ? t.members.join('、') : '目前只有你');
     card.append(h);
-    for (const [k, icon, name] of [['cam', '📷', '鏡頭'], ['mic', '🎤', '麥克風']]) {
+    for (const [k, icon, name] of [['cam', '📷', '鏡頭'], ['mic', '🎤', '麥克風'], ['scr', '🖥️', '螢幕分享']]) {
       const row = document.createElement('div');
       row.className = 'trow';
       const label = document.createElement('span');
@@ -351,14 +361,16 @@
     peers.set(id, p);
     if (initiator) {
       pc.addTransceiver('audio', { direction: 'sendrecv' });
-      pc.addTransceiver('video', { direction: 'sendrecv' });
+      pc.addTransceiver('video', { direction: 'sendrecv' }); // 鏡頭
+      pc.addTransceiver('video', { direction: 'sendrecv' }); // 螢幕分享
       attachTracks(id);
     }
     pc.onicecandidate = (e) => { if (e.candidate) socket.emit('signal', { to: id, data: { candidate: e.candidate } }); };
     pc.ontrack = (e) => {
       ensureTile(id);
       // 聲音和畫面分開播放：聲音用獨立的 <audio>，畫面用靜音的 <video>（Safari／手機比較不會擋）
-      const el = e.track.kind === 'audio' ? p.audio : p.video;
+      const idx = p.pc.getTransceivers().indexOf(e.transceiver);
+      const el = e.track.kind === 'audio' ? p.audio : idx === 2 ? p.svideo : p.video;
       el.srcObject = new MediaStream([e.track]);
       e.track.onunmute = () => el.play().catch(showUnlock); // 對方開始送聲音／畫面時再播一次
       el.play().catch(showUnlock);
@@ -417,6 +429,7 @@
     if (!p) return;
     try { p.pc.close(); } catch (_) { /* ignore */ }
     if (p.tile) p.tile.remove();
+    if (p.stile) p.stile.remove();
     if (p.audio) { p.audio.srcObject = null; p.audio.remove(); }
     peers.delete(id);
   }
@@ -439,18 +452,33 @@
     tile.append(v, off, label);
     $('videos').append(tile);
     p.tile = tile; p.video = v; p.label = label; p.off = off;
+    // 螢幕分享的格子
+    const stile = document.createElement('div');
+    stile.className = 'vtile screen';
+    stile.hidden = true;
+    const sv = document.createElement('video');
+    sv.autoplay = true; sv.playsInline = true; sv.muted = true;
+    const slabel = document.createElement('span');
+    stile.append(sv, slabel);
+    $('videos').prepend(stile);
+    p.stile = stile; p.svideo = sv; p.slabel = slabel;
     refreshTile(id);
   }
   function refreshTile(id) {
     const p = peers.get(id), u = users.get(id);
     if (!p || !p.tile || !u) return;
     const n = linkInfo.get(id);
-    const flowing = n && (n.recv.v || n.recv.a || n.send.v || n.send.a);
+    const flowing = n && (n.recv.v || n.recv.a || n.send.v || n.send.a || n.recv.s || n.send.s);
     p.tile.hidden = !flowing;
+    const scrOn = !!(n && n.recv.s && u.scr);
+    p.stile.hidden = !scrOn;
+    p.slabel.textContent = `🖥️ ${u.name} 的螢幕`;
+    if (scrOn) p.svideo.play().catch(() => {});
     p.tile.classList.toggle('cam-off', !(n && n.recv.v && u.cam));
     p.off.textContent = u.name.slice(0, 1);
     const conn = p.state === 'failed' ? '❌ 連線失敗 ' : p.state && !['connected', 'completed'].includes(p.state) ? '⏳ ' : '';
     p.label.textContent = conn + (n && n.recv.a && u.mic ? '' : '🔇 ') + u.name;
+    updateLayout();
   }
   let selfVideo = null;
   function setupSelfTile() {
@@ -464,7 +492,18 @@
     tile.append(v, label);
     $('videos').prepend(tile);
     selfVideo = v;
+    const st = document.createElement('div');
+    st.className = 'vtile screen self-screen';
+    st.hidden = true;
+    const sv = document.createElement('video');
+    sv.autoplay = true; sv.playsInline = true; sv.muted = true;
+    const sl = document.createElement('span');
+    sl.textContent = '🖥️ 你正在分享螢幕';
+    st.append(sv, sl);
+    $('videos').prepend(st);
+    selfScreen = sv;
   }
+  let selfScreen = null;
 
   // ---------- 裝置設定與測試 ----------
   const devPref = { mic: store.get('dev-mic') || '', spk: store.get('dev-spk') || '', cam: store.get('dev-cam') || '' };
@@ -670,12 +709,12 @@
     const p = peers.get(id);
     if (!p) return;
     const n = linkInfo.get(id);
-    const send = n ? n.send : { v: false, a: false };
-    for (const t of p.pc.getTransceivers()) {
-      const kind = t.receiver && t.receiver.track && t.receiver.track.kind;
-      const track = kind === 'video' ? (send.v ? camTrack : null) : kind === 'audio' ? (send.a ? micTrack : null) : null;
+    const send = n ? n.send : { v: false, a: false, s: false };
+    p.pc.getTransceivers().forEach((t, i) => {
+      // 0=麥克風 1=鏡頭 2=螢幕分享
+      const track = i === 0 ? (send.a ? micTrack : null) : i === 1 ? (send.v ? camTrack : null) : i === 2 ? (send.s ? screenTrack : null) : null;
       if (t.sender && t.sender.track !== track) t.sender.replaceTrack(track).catch(() => {});
-    }
+    });
   }
   function attachAll() { for (const id of peers.keys()) attachTracks(id); }
   function localNotice(text) { addMsg({ system: true, text, ts: Date.now() }); }
@@ -734,14 +773,102 @@
       }
       if (!camTrack) selfVideo.srcObject = null;
     }
-    if (joined) socket.emit('media-state', { cam: !!camTrack, mic: !!micTrack });
+    $('shareBtn').innerHTML = screenTrack ? '⏹ <span class="lbl">停止分享</span>' : '🖥️ <span class="lbl">分享螢幕</span>';
+    $('shareBtn').className = screenTrack ? 'live' : '';
+    if (selfScreen) {
+      selfScreen.parentElement.hidden = !screenTrack;
+      if (screenTrack && (!selfScreen.srcObject || selfScreen.srcObject.getVideoTracks()[0] !== screenTrack)) {
+        selfScreen.srcObject = new MediaStream([screenTrack]); selfScreen.play().catch(() => {});
+      }
+      if (!screenTrack) selfScreen.srcObject = null;
+    }
+    syncToolbar();
+    updateLayout();
+    if (joined) socket.emit('media-state', { cam: !!camTrack, mic: !!micTrack, scr: !!screenTrack });
   }
+
+  // ---------- 可收合的側邊欄 ----------
+  let sideOpen = true, lastMeeting = false, unread = 0;
+  function setSidebar(open) {
+    sideOpen = open;
+    document.querySelector('main').classList.toggle('side-closed', !open);
+    if (open) unread = 0;
+    renderSideTab();
+  }
+  function renderSideTab() {
+    const b = $('sideToggle');
+    if (!b) return;
+    if (sideOpen) { b.innerHTML = '<span class="arrow">▶</span>'; b.title = '收起側邊欄'; b.classList.remove('has-unread'); return; }
+    let html = '<span class="arrow">◀</span>';
+    if (pomo.phase !== 'idle') {
+      const left = Math.max(0, Math.round((pomo.endsAt - (Date.now() + clockOffset)) / 1000));
+      html += `<span class="mini">${pomo.phase === 'focus' ? '🔥' : '☕'}<br>${pad(Math.floor(left / 60))}:${pad(left % 60)}</span>`;
+    } else html += '<span class="mini">🍅</span>';
+    html += `<span class="mini">💬${unread ? `<b>${unread > 99 ? '99+' : unread}</b>` : ''}</span>`;
+    b.innerHTML = html;
+    b.title = '打開側邊欄（番茄鐘、自習時間、聊天室）';
+    b.classList.toggle('has-unread', unread > 0);
+  }
+  $('sideToggle').onclick = () => setSidebar(!sideOpen);
+
+  // ---------- 會議版面（類似騰訊會議） ----------
+  let layoutOverride = null; // 'map' = 使用者手動切回大地圖
+  let wasMeeting = false;
+  function updateLayout() {
+    const stage = $('stage');
+    if (!stage) return;
+    let anyScreen = !!screenTrack, anyVideo = !!camTrack || !!screenTrack;
+    for (const [id, p] of peers) {
+      if (p.stile && !p.stile.hidden) { anyScreen = true; anyVideo = true; }
+      if (p.tile && !p.tile.hidden && !p.tile.classList.contains('cam-off')) anyVideo = true;
+    }
+    if (anyVideo && !wasMeeting) layoutOverride = null; // 有新的視訊出現時自動切到會議畫面
+    wasMeeting = anyVideo;
+    const meeting = anyVideo && layoutOverride !== 'map';
+    stage.classList.toggle('meeting', meeting);
+    if (meeting !== lastMeeting) { lastMeeting = meeting; setSidebar(!meeting); } // 會議畫面預設收起，其他時候預設打開
+    $('videos').classList.toggle('has-screen', meeting && anyScreen);
+    $('backMeeting').hidden = !(anyVideo && !meeting);
+    if (meeting) {
+      const tiles = [...$('videos').children].filter((t) => !t.hidden && !t.classList.contains('screen'));
+      $('videos').style.setProperty('--cols', String(Math.max(1, Math.ceil(Math.sqrt(tiles.length)))));
+      $('videos').style.setProperty('--rows', String(Math.max(1, tiles.length)));
+    }
+  }
+  function syncToolbar() {
+    const set = (id, src) => { const a = $(id), b = $(src); a.innerHTML = b.innerHTML; a.className = b.className; a.hidden = b.hidden; };
+    set('tMic', 'micBtn'); set('tCam', 'camBtn'); set('tShare', 'shareBtn');
+  }
+  $('tMic').onclick = () => $('micBtn').click();
+  $('tCam').onclick = () => $('camBtn').click();
+  $('tShare').onclick = toggleShare;
+  $('tSettings').onclick = () => $('settingsBtn').click();
+  $('tMap').onclick = () => { layoutOverride = 'map'; updateLayout(); };
+  $('backMeeting').onclick = () => { layoutOverride = null; updateLayout(); };
+  // ---------- 螢幕分享 ----------
+  let screenTrack = null;
+  const canShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+  async function toggleShare() {
+    if (screenTrack) { stopTrack(screenTrack); screenTrack = null; attachAll(); updateMediaButtons(); return; }
+    if (!canShare) { localNotice('⚠️ 這個裝置的瀏覽器不支援分享螢幕（手機和平板通常不行，請用電腦）'); return; }
+    try {
+      const s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 10, max: 15 } }, audio: false });
+      screenTrack = s.getVideoTracks()[0];
+      if ('contentHint' in screenTrack) screenTrack.contentHint = 'detail';
+      screenTrack.onended = () => { screenTrack = null; attachAll(); updateMediaButtons(); }; // 從瀏覽器的「停止分享」按掉
+      attachAll(); updateMediaButtons();
+      if (!linkState.peers.some((n) => n.send.s)) localNotice('🖥️ 已開始分享螢幕。目前還沒有人同意接收，對方按 🖥️ 的 ○（討論桌要雙方都開放螢幕分享）後就會看到。');
+    } catch (_) { /* 使用者取消 */ }
+  }
+  $('shareBtn').onclick = toggleShare;
+  $('shareBtn').hidden = !canShare;
+
   $('camBtn').onclick = () => { camAllowed = !camAllowed; syncMedia(); };
   $('micBtn').onclick = () => { micAllowed = !micAllowed; syncMedia(); };
-  socket.on('user-media', ({ id, cam, mic }) => {
+  socket.on('user-media', ({ id, cam, mic, scr }) => {
     const u = users.get(id);
     if (!u) return;
-    u.cam = cam; u.mic = mic;
+    u.cam = cam; u.mic = mic; u.scr = !!scr;
     refreshTile(id);
   });
 
@@ -772,7 +899,7 @@
     const chatInput = $('chatInput');
     if (document.activeElement === chatInput) { if (e.key === 'Escape') chatInput.blur(); return; }
     if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-    if (e.key === 'Enter') { e.preventDefault(); chatInput.focus(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); if (!sideOpen) setSidebar(true); chatInput.focus(); return; }
     const d = KEYMAP[e.code];
     if (d) { e.preventDefault(); press(d); }
   });
@@ -856,6 +983,7 @@
       ctx.fillStyle = u.id === selfId ? 'rgba(74,144,217,.9)' : connected ? 'rgba(46,158,91,.92)' : ringing ? 'rgba(232,140,40,.95)' : 'rgba(0,0,0,.55)';
       roundRect(ctx, px + T / 2 - w / 2, py - 14, w, 15, 7); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.fillText(label, px + T / 2, py - 6);
+      drawSpeech(u, px + T / 2, py - 17, ts);
     }
 
     // 距離越遠音量越小
@@ -871,6 +999,52 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  // ---------- 頭上的對話框 ----------
+  function wrapText(text, maxW, maxLines) {
+    const lines = [];
+    let cur = '';
+    for (const ch of text) {
+      if (ctx.measureText(cur + ch).width > maxW && cur) { lines.push(cur); cur = ''; if (lines.length === maxLines) break; }
+      cur += ch;
+    }
+    if (lines.length < maxLines && cur) lines.push(cur);
+    const used = lines.join('').length;
+    if (used < [...text].length && lines.length) {
+      let last = lines[lines.length - 1];
+      while (last && ctx.measureText(last + '…').width > maxW) last = last.slice(0, -1);
+      lines[lines.length - 1] = last + '…';
+    }
+    return lines;
+  }
+  function drawSpeech(u, cx, bottom, now) {
+    const saying = u.say && u.say.until > now;
+    const typing = !saying && u.typingUntil > now;
+    if (!saying && !typing) return;
+    ctx.save();
+    ctx.font = '12px system-ui, "PingFang TC", "Microsoft JhengHei", sans-serif';
+    let lines, w, h;
+    if (saying) {
+      lines = wrapText(u.say.text, 150, 2);
+      w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 14;
+      h = lines.length * 15 + 8;
+    } else { w = 34; h = 18; }
+    const fade = saying ? Math.min(1, (u.say.until - now) / 600) : 1; // 最後 0.6 秒淡出
+    ctx.globalAlpha = fade;
+    const x = Math.max(2, Math.min(canvas.width - w - 2, cx - w / 2)), y = bottom - h - 6;
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = 'rgba(59,47,39,.35)'; ctx.lineWidth = 1;
+    roundRect(ctx, x, y, w, h, 8); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - 5, y + h - 0.5); ctx.lineTo(cx, y + h + 6); ctx.lineTo(cx + 5, y + h - 0.5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3b2f27'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (saying) lines.forEach((l, i) => ctx.fillText(l, x + w / 2, y + 4 + 7.5 + i * 15));
+    else {
+      for (let i = 0; i < 3; i++) { // 跳動的三個點
+        const dy = Math.sin(now / 180 - i * 0.9) * 2;
+        ctx.beginPath(); ctx.arc(x + 10 + i * 7, y + h / 2 + dy, 2.2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
 
   // ---------- 聊天 ----------
   function addMsg(m) {
@@ -891,11 +1065,26 @@
     box.append(div);
     if (atBottom) box.scrollTop = box.scrollHeight;
   }
+  // 打字中通知（最多每 2 秒送一次；清空、送出或離開輸入框就取消）
+  let typingSent = 0;
+  function setTyping(on) {
+    const me = users.get(selfId);
+    if (on) {
+      if (me) me.typingUntil = performance.now() + 6000;
+      if (performance.now() - typingSent > 2000) { typingSent = performance.now(); socket.emit('typing', true); }
+    } else if (typingSent) {
+      typingSent = 0; socket.emit('typing', false);
+      if (me) me.typingUntil = 0;
+    }
+  }
+  $('chatInput').addEventListener('input', () => setTyping($('chatInput').value.trim().length > 0));
+  $('chatInput').addEventListener('blur', () => setTyping(false));
   $('chatForm').onsubmit = (e) => {
     e.preventDefault();
     const t = $('chatInput').value.trim();
     if (t) socket.emit('chat', t);
     $('chatInput').value = '';
+    typingSent = 0; // 送出後伺服器的訊息會自動清掉「…」
   };
 
   // ---------- 番茄鐘 ----------
@@ -929,6 +1118,7 @@
       $('pomoPhase').textContent = '尚未開始：大家按下「開始」就會一起計時';
       el.textContent = '--:--';
       document.title = '像素自習室';
+      if (!sideOpen) renderSideTab();
       return;
     }
     const left = Math.max(0, Math.round((pomo.endsAt - (Date.now() + clockOffset)) / 1000));
@@ -936,6 +1126,7 @@
     el.textContent = s;
     $('pomoPhase').textContent = pomo.phase === 'focus' ? `🔥 專注中（第 ${pomo.round} 輪）` : '☕ 休息中';
     document.title = `${pomo.phase === 'focus' ? '🔥' : '☕'} ${s}｜像素自習室`;
+    if (!sideOpen) renderSideTab();
   }
   setInterval(renderPomo, 250);
   $('pomoStart').onclick = () => { ensureAudio(); socket.emit('pomo-start', { focus: $('pomoFocus').value, brk: $('pomoBreak').value }); };
@@ -943,8 +1134,16 @@
   $('pomoStop').onclick = () => socket.emit('pomo-stop');
 
   // ---------- 排行 ----------
+  // 自己的今日時間也存在瀏覽器裡，主機重啟後進來會補回去
+  const taipeiDate = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' });
+  function loadToday() {
+    try { const t = JSON.parse(store.get('today') || 'null'); return t && t.date === taipeiDate() ? t : null; } catch (_) { return null; }
+  }
   function setBoard(list) {
     boardData = list || [];
+    const mine = boardData.find((r) => r.name === profile.name);
+    const saved = loadToday();
+    if (mine && (!saved || mine.sec >= saved.sec)) store.set('today', JSON.stringify({ date: taipeiDate(), sec: mine.sec }));
     const ol = $('board');
     ol.innerHTML = '';
     if (!boardData.length) { const li = document.createElement('li'); li.textContent = '還沒有紀錄'; ol.append(li); return; }

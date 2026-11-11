@@ -85,7 +85,7 @@ const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 //  quiet  自習區：站在旁邊，鏡頭和麥克風分開問，各自要雙方都按 ○ 才開
 //  table  討論桌：同一桌的人互相連線，鏡頭／麥克風各自決定要不要開
 //  lounge 休息區：靠近就自動開語音；視訊要雙方都按 ○
-const pairConsent = new Map(); // "a|b" -> { v: {[id]: true/false}, a: {...} }  v=視訊 a=語音
+const pairConsent = new Map(); // "a|b" -> { v: {...}, a: {...}, s: {...} }  v=視訊 a=語音 s=螢幕分享
 const linkCtx = new Map();     // "a|b" -> 'quiet' | 'table' | 'lounge'
 const tableState = new Map();  // id -> { table, cam, mic, camAns, micAns }
 const sentState = new Map();   // id -> 上次送出的狀態（避免重複送）
@@ -106,7 +106,7 @@ function recompute() {
     const u = users.get(id);
     const ts = tableState.get(id);
     const t = MAP.tableAt(u.x, u.y);
-    if (ts.table !== t) Object.assign(ts, { table: t, cam: false, mic: false, camAns: false, micAns: false });
+    if (ts.table !== t) Object.assign(ts, { table: t, cam: false, mic: false, scr: false, camAns: false, micAns: false, scrAns: false });
   }
   const out = new Map(ids.map((i) => [i, []]));
   for (let i = 0; i < ids.length; i++) {
@@ -117,18 +117,18 @@ function recompute() {
       const ctx = ctxOf(users.get(a), users.get(b), prev);
       if (ctx !== prev) pairConsent.delete(key); // 換了情境就重新詢問
       if (ctx) { linkCtx.set(key, ctx); links.add(key); } else { linkCtx.delete(key); links.delete(key); continue; }
-      const pc = pairConsent.get(key) || { v: {}, a: {} };
-      const get = (k, id) => (pc[k][id] === undefined ? null : pc[k][id]);
-      const ca = { v: get('v', a), a: get('a', a) };
-      const cb = { v: get('v', b), a: get('a', b) };
-      const bothV = ca.v === true && cb.v === true;
-      const bothA = ca.a === true && cb.a === true;
-      let sab, sba; // a 送給 b、b 送給 a 的內容 {v: 視訊, a: 語音}
-      if (ctx === 'quiet') { sab = { v: bothV, a: bothA }; sba = sab; }
-      else if (ctx === 'lounge') { sab = { v: bothV, a: true }; sba = sab; }
+      const pc = pairConsent.get(key) || { v: {}, a: {}, s: {} };
+      const get = (k, id) => (pc[k] && pc[k][id] !== undefined ? pc[k][id] : null);
+      const ca = { v: get('v', a), a: get('a', a), s: get('s', a) };
+      const cb = { v: get('v', b), a: get('a', b), s: get('s', b) };
+      const both = (k) => ca[k] === true && cb[k] === true;
+      let sab, sba; // a 送給 b、b 送給 a 的內容 {v: 視訊, a: 語音, s: 螢幕分享}
+      if (ctx === 'quiet') { sab = { v: both('v'), a: both('a'), s: both('s') }; sba = sab; }
+      else if (ctx === 'lounge') { sab = { v: both('v'), a: true, s: both('s') }; sba = sab; }
       else {
         const A = tableState.get(a), B = tableState.get(b);
-        sab = { v: A.cam, a: A.mic }; sba = { v: B.cam, a: B.mic };
+        const scr = A.scr && B.scr; // 討論桌：雙方都開放螢幕分享才互通
+        sab = { v: A.cam, a: A.mic, s: scr }; sba = { v: B.cam, a: B.mic, s: scr };
       }
       out.get(a).push({ id: b, ctx, send: sab, recv: sba, mine: ca, theirs: cb });
       out.get(b).push({ id: a, ctx, send: sba, recv: sab, mine: cb, theirs: ca });
@@ -137,7 +137,7 @@ function recompute() {
   for (const id of ids) {
     const ts = tableState.get(id);
     const table = ts.table ? {
-      id: ts.table, cam: ts.cam, mic: ts.mic, camAns: ts.camAns, micAns: ts.micAns,
+      id: ts.table, cam: ts.cam, mic: ts.mic, scr: ts.scr, camAns: ts.camAns, micAns: ts.micAns, scrAns: ts.scrAns,
       members: ids.filter((o) => o !== id && tableState.get(o).table === ts.table).map((o) => users.get(o).name),
     } : null;
     const payload = { peers: out.get(id), table };
@@ -209,10 +209,15 @@ io.on('connection', (socket) => {
       id: socket.id, name,
       color: HEX.test(p.color) ? p.color : '#4a90d9',
       hair: HEX.test(p.hair) ? p.hair : '#2b1d14',
-      x, y, dir: 'down', cam: false, mic: false,
+      x, y, dir: 'down', cam: false, mic: false, scr: false,
     };
     users.set(socket.id, u);
-    tableState.set(socket.id, { table: 0, cam: false, mic: false, camAns: false, micAns: false });
+    // 主機休眠／重新部署會清掉紀錄：用瀏覽器備份的今日時間補回來
+    if (p.today && p.today.date === today() && Number.isFinite(p.today.sec)) {
+      if (stats.date !== today()) stats = { date: today(), seconds: {} };
+      stats.seconds[name] = Math.max(stats.seconds[name] || 0, Math.min(86400, Math.floor(p.today.sec)));
+    }
+    tableState.set(socket.id, { table: 0, cam: false, mic: false, scr: false, camAns: false, micAns: false, scrAns: false });
     ack({ ok: true, self: u, users: [...users.values()], chat: chatHistory, pomo, board: board(), now: Date.now() });
     socket.broadcast.emit('user-joined', u);
     if (!rejoin) systemMsg(`👋 ${name} 進入了自習室`);
@@ -236,8 +241,8 @@ io.on('connection', (socket) => {
   socket.on('media-state', (m) => {
     const u = me();
     if (!u || !m) return;
-    u.cam = !!m.cam; u.mic = !!m.mic;
-    socket.broadcast.emit('user-media', { id: u.id, cam: u.cam, mic: u.mic });
+    u.cam = !!m.cam; u.mic = !!m.mic; u.scr = !!m.scr;
+    socket.broadcast.emit('user-media', { id: u.id, cam: u.cam, mic: u.mic, scr: u.scr });
   });
 
   // 自習區／休息區：對某個人的鏡頭（kind='v'）或麥克風（kind='a'）按 ○（true）或 ✕（false）
@@ -246,9 +251,10 @@ io.on('connection', (socket) => {
     const key = pairKey(socket.id, m.peer);
     const ctx = linkCtx.get(key);
     if (!ctx || ctx === 'table') return;
-    const kind = m.kind === 'a' ? 'a' : 'v';
+    const kind = ['v', 'a', 's'].includes(m.kind) ? m.kind : 'v';
     if (ctx === 'lounge' && kind === 'a') return; // 休息區語音本來就是開的
-    const pc = pairConsent.get(key) || { v: {}, a: {} };
+    const pc = pairConsent.get(key) || { v: {}, a: {}, s: {} };
+    if (!pc[kind]) pc[kind] = {};
     pc[kind][socket.id] = m.value === true;
     pairConsent.set(key, pc);
     recompute();
@@ -259,6 +265,7 @@ io.on('connection', (socket) => {
     if (!ts || !ts.table || !m) return;
     if ('cam' in m) { ts.cam = !!m.cam; ts.camAns = true; }
     if ('mic' in m) { ts.mic = !!m.mic; ts.micAns = true; }
+    if ('scr' in m) { ts.scr = !!m.scr; ts.scrAns = true; }
     recompute();
   });
 
@@ -276,7 +283,13 @@ io.on('connection', (socket) => {
     if (now - lastChat < 400) return;
     lastChat = now;
     const t = String(text || '').trim().slice(0, 300);
-    if (t) pushChat({ name: u.name, color: u.color, text: t, ts: now });
+    if (t) pushChat({ id: u.id, name: u.name, color: u.color, text: t, ts: now });
+  });
+
+  // 正在打字：讓其他人在角色頭上看到「…」
+  socket.on('typing', (v) => {
+    if (!me()) return;
+    socket.broadcast.emit('user-typing', { id: socket.id, typing: !!v });
   });
 
   socket.on('pomo-start', (opt) => {
@@ -323,5 +336,11 @@ setInterval(() => {
   if (names.size) io.emit('board', board());
 }, 10000);
 setInterval(saveStats, 60000);
+
+// Render 重新部署／休眠前會送 SIGTERM：先存檔再結束
+process.on('SIGTERM', () => {
+  try { fs.writeFileSync(DATA_FILE, JSON.stringify(stats)); } catch (_) { /* ignore */ }
+  process.exit(0);
+});
 
 server.listen(PORT, () => console.log(`像素自習室已啟動：http://localhost:${PORT}`));

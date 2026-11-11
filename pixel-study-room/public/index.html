@@ -30,6 +30,7 @@
       <span id="zone" class="zone"></span>
       <span class="spacer"></span>
       <button id="settingsBtn" title="裝置設定與測試">⚙️<span class="lbl"> 裝置設定</span></button>
+      <button id="shareBtn" title="分享你的螢幕給已同意的人">🖥️ <span class="lbl">分享螢幕</span></button>
       <button id="camBtn" title="總開關：停用後任何情況都不會開鏡頭">📷 鏡頭：待命</button>
       <button id="micBtn" title="總開關：停用後任何情況都不會開麥克風">🎤 麥克風：待命</button>
     </header>
@@ -44,8 +45,17 @@
           <button data-dir="down" class="down">▼</button>
         </div>
         <div id="bubbles"></div>
+        <div id="mtools">
+          <button id="tMic"></button>
+          <button id="tCam"></button>
+          <button id="tShare"></button>
+          <button id="tSettings">⚙️ <span class="lbl">設定</span></button>
+          <button id="tMap">🗺️ <span class="lbl">大地圖</span></button>
+        </div>
+        <button id="backMeeting" hidden>🎥 回到會議畫面</button>
         <div id="prompt"></div>
         <button id="unlock" hidden>🔊 點這裡開啟聲音</button>
+        <button id="sideToggle" title="收起側邊欄"><span class="arrow">▶</span></button>
         <div id="help">方向鍵／WASD 移動・Enter 聊天</div>
       </section>
       <aside>
