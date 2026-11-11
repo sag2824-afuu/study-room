@@ -818,9 +818,9 @@
   function updateLayout() {
     const stage = $('stage');
     if (!stage) return;
-    let anyScreen = !!screenTrack, anyVideo = !!camTrack || !!screenTrack;
+    let anyVideo = !!camTrack || !!screenTrack;
     for (const [id, p] of peers) {
-      if (p.stile && !p.stile.hidden) { anyScreen = true; anyVideo = true; }
+      if (p.stile && !p.stile.hidden) anyVideo = true;
       if (p.tile && !p.tile.hidden && !p.tile.classList.contains('cam-off')) anyVideo = true;
     }
     if (anyVideo && !wasMeeting) layoutOverride = null; // 有新的視訊出現時自動切到會議畫面
@@ -828,14 +828,29 @@
     const meeting = anyVideo && layoutOverride !== 'map';
     stage.classList.toggle('meeting', meeting);
     if (meeting !== lastMeeting) { lastMeeting = meeting; setSidebar(!meeting); } // 會議畫面預設收起，其他時候預設打開
-    $('videos').classList.toggle('has-screen', meeting && anyScreen);
     $('backMeeting').hidden = !(anyVideo && !meeting);
+    // 主畫面：使用者點選固定的格子 > 第一個螢幕分享 > 沒有（平均排列）
+    const box = $('videos');
+    const vis = [...box.children].filter((t) => !t.hidden);
+    if (pinned && (!pinned.isConnected || pinned.hidden)) pinned = null;
+    const main = meeting ? (pinned || vis.find((t) => t.classList.contains('screen')) || null) : null;
+    for (const t of box.children) { t.classList.toggle('main', t === main); t.classList.toggle('pinned', t === pinned && meeting); }
+    box.classList.toggle('has-main', !!main);
     if (meeting) {
-      const tiles = [...$('videos').children].filter((t) => !t.hidden && !t.classList.contains('screen'));
-      $('videos').style.setProperty('--cols', String(Math.max(1, Math.ceil(Math.sqrt(tiles.length)))));
-      $('videos').style.setProperty('--rows', String(Math.max(1, tiles.length)));
+      const others = vis.filter((t) => t !== main);
+      box.style.setProperty('--cols', String(Math.max(1, Math.ceil(Math.sqrt(others.length)))));
+      box.style.setProperty('--rows', String(Math.max(1, others.length)));
     }
   }
+  // 會議畫面：點一下某個格子就放大成主畫面，再點一次取消
+  let pinned = null;
+  $('videos').addEventListener('click', (e) => {
+    if (!$('stage').classList.contains('meeting')) return;
+    const t = e.target.closest('.vtile');
+    if (!t) return;
+    pinned = pinned === t ? null : t;
+    updateLayout();
+  });
   function syncToolbar() {
     const set = (id, src) => { const a = $(id), b = $(src); a.innerHTML = b.innerHTML; a.className = b.className; a.hidden = b.hidden; };
     set('tMic', 'micBtn'); set('tCam', 'camBtn'); set('tShare', 'shareBtn'); set('tSwitch', 'switchBtn');
