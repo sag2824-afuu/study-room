@@ -240,10 +240,13 @@
   socket.on('pomo', (p) => setPomo(p, false));
   socket.on('board', setBoard);
   // ---------- 連線狀態（自習區／討論桌／休息區） ----------
-  const kindsOf = (n) => (n.ctx === 'quiet' ? ['v', 'a', 's'] : n.ctx === 'lounge' ? ['v', 's'] : []);
+  const kindsOf = (n) => n.kinds || [];
+  let prevReqIds = new Set();
   const isInvite = (n) => kindsOf(n).some((k) => n.theirs[k] === true && n.mine[k] === null);
   function applyLinks(st) {
     const prevInvites = new Set([...linkInfo.values()].filter(isInvite).map((n) => n.id));
+    if (st.group && st.group.requests.some((r) => !prevReqIds.has(r.id))) beep('ring'); // 有人申請加入小群組
+    prevReqIds = new Set(st.group ? st.group.requests.map((r) => r.id) : []);
     linkState = st;
     linkInfo.clear();
     for (const n of st.peers) linkInfo.set(n.id, n);
@@ -273,6 +276,14 @@
     const want = new Set();
     for (const n of linkState.peers) {
       const segs = [];
+      if (n.join) { // 對方在小群組裡：可以申請加入
+        const seg = document.createElement('span');
+        seg.className = 'seg' + (n.join === 'pending' ? '' : ' invite');
+        const t = document.createElement('span');
+        if (n.join === 'pending') { t.textContent = '👥 等待同意…'; seg.append(t, mkBtn('取消', () => socket.emit('group-cancel', { peer: n.id }), 'x')); }
+        else { t.textContent = '👥 小群組'; seg.append(t, mkBtn('申請加入', () => socket.emit('group-join', { peer: n.id }), 'o')); }
+        segs.push(seg);
+      }
       for (const k of kindsOf(n)) {
         if (n.mine[k] === false) continue; // 按過 ✕ 就不再顯示，走開再回來會重新詢問
         const icon = k === 'v' ? '📷' : k === 'a' ? '🎤' : '🖥️';
@@ -298,7 +309,7 @@
       let el = bubbles.get(n.id);
       if (!el) { el = document.createElement('div'); $('bubbles').append(el); bubbles.set(n.id, el); }
       el.innerHTML = '';
-      el.className = 'bubble' + (isInvite(n) ? ' invite' : '');
+      el.className = 'bubble' + (isInvite(n) ? ' invite' : '') + (n.join === 'can' ? ' joinable' : '');
       el.append(...segs);
     }
     for (const [id, el] of bubbles) if (!want.has(id)) { el.remove(); bubbles.delete(id); }
@@ -320,9 +331,40 @@
   }
 
   // 討論桌卡片：鏡頭／麥克風分開問
+  function renderGroup(box) {
+    const g = linkState.group;
+    const card = document.createElement('div');
+    card.className = 'tablecard groupcard';
+    const h = document.createElement('div');
+    h.className = 'th';
+    h.textContent = `👥 小群組・${g.members.join('、')}`;
+    card.append(h);
+    const rows = g.zone === 'lounge' ? [['v', '📷', '鏡頭'], ['s', '🖥️', '螢幕分享']] : [['v', '📷', '鏡頭'], ['a', '🎤', '麥克風'], ['s', '🖥️', '螢幕分享']];
+    for (const [k, icon, name] of rows) {
+      const row = document.createElement('div');
+      row.className = 'trow';
+      const label = document.createElement('span');
+      const on = g.media[k];
+      label.textContent = `${icon} ${name}：${on ? '開' : '關'}`;
+      row.append(label, mkBtn(on ? '關閉' : '開啟', () => socket.emit('group-media', { [k]: !on }), on ? 'x' : 'o'));
+      card.append(row);
+    }
+    if (g.zone === 'lounge') { const p = document.createElement('div'); p.className = 'hint'; p.textContent = '🎤 休息區的語音是公開的，靠近就聽得到'; card.append(p); }
+    for (const r of g.requests) {
+      const row = document.createElement('div');
+      row.className = 'trow req';
+      const label = document.createElement('span');
+      label.textContent = `🙋 ${r.name} 想加入`;
+      row.append(label, mkBtn('○', () => socket.emit('group-answer', { id: r.id, ok: true }), 'o'), mkBtn('✕', () => socket.emit('group-answer', { id: r.id, ok: false }), 'x'));
+      card.append(row);
+    }
+    card.append(mkBtn('🚪 離開小群組', () => socket.emit('group-leave'), 'leave'));
+    box.append(card);
+  }
   function renderTable() {
     const box = $('prompt');
     box.innerHTML = '';
+    if (linkState.group) { renderGroup(box); return; }
     const t = linkState.table;
     if (!t) return;
     const card = document.createElement('div');
@@ -520,7 +562,10 @@
     if (canSink && el && el.setSinkId) el.setSinkId(devPref.spk || '').catch(() => {});
   }
   // Safari／手機常會擋自動播放聲音：被擋時顯示按鈕讓使用者點一下
-  function showUnlock() { $('unlock').hidden = false; }
+  function showUnlock(e) {
+    if (e && e.name && e.name !== 'NotAllowedError') return; // 只有瀏覽器真的擋住聲音時才顯示（換來源造成的中斷不算）
+    $('unlock').hidden = false;
+  }
   $('unlock').onclick = () => {
     $('unlock').hidden = true;
     for (const p of peers.values()) { if (p.audio) p.audio.play().catch(() => {}); if (p.video) p.video.play().catch(() => {}); }
@@ -915,9 +960,14 @@
   const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
   const held = [];
   let lastMoveAt = 0;
+  let frozenNoticeAt = 0;
   function tryMove(dir) {
     const me = users.get(selfId);
     if (!me) return;
+    if ($('stage').classList.contains('meeting')) { // 會議畫面時不能移動
+      if (performance.now() - frozenNoticeAt > 4000) { frozenNoticeAt = performance.now(); flashHint('會議中不能移動，按「🗺️ 大地圖」回到地圖再走'); }
+      return;
+    }
     const now = performance.now();
     if (now - lastMoveAt < 120) return;
     lastMoveAt = now;
@@ -972,6 +1022,8 @@
     const r = MAP.region(me.x, me.y);
     z.classList.toggle('quiet', r === 'quiet');
     const t = linkState.table;
+    const g = linkState.group;
+    if (g) { z.textContent = `👥 小群組（${g.members.length + 1} 人）`; z.classList.remove('quiet'); return; }
     z.textContent = r === 'quiet' ? '🤫 自習區：走到別人旁邊可以邀請視訊'
       : t ? `🪑 討論桌 ${t.id}`
       : r === 'discuss' ? '💬 討論區：走到桌子旁邊加入討論'
@@ -1037,6 +1089,12 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  function flashHint(text) {
+    const h = $('flash');
+    h.textContent = text; h.hidden = false;
+    clearTimeout(flashHint.t); flashHint.t = setTimeout(() => { h.hidden = true; }, 2500);
+  }
 
   // ---------- 頭上的對話框 ----------
   function wrapText(text, maxW, maxLines) {

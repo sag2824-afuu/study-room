@@ -110,14 +110,20 @@ function board() {
 
 // ---------- 接近偵測 ----------
 const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
-// 三種區域的規則：
-//  quiet  自習區：站在旁邊，鏡頭和麥克風分開問，各自要雙方都按 ○ 才開
+// 區域的規則：
+//  quiet  自習區：站在旁邊，鏡頭／麥克風／螢幕分開問，各自要雙方都按 ○ 才開
 //  table  討論桌：同一桌的人互相連線，鏡頭／麥克風各自決定要不要開
-//  lounge 休息區：靠近就自動開語音；視訊要雙方都按 ○
+//  lounge 休息區：靠近就自動開語音；視訊／螢幕要雙方都按 ○
+//  group  小群組：自習區或休息區裡，兩個人只要有一項雙方都同意就組成小群組；
+//         其他人可以申請加入（任何成員同意即可），成員各自決定要開什麼
 const pairConsent = new Map(); // "a|b" -> { v: {...}, a: {...}, s: {...} }  v=視訊 a=語音 s=螢幕分享
-const linkCtx = new Map();     // "a|b" -> 'quiet' | 'table' | 'lounge'
+const linkCtx = new Map();     // "a|b" -> 'quiet' | 'table' | 'lounge' | 'group'
 const tableState = new Map();  // id -> { table, cam, mic, camAns, micAns }
 const sentState = new Map();   // id -> 上次送出的狀態（避免重複送）
+const groups = new Map();      // gid -> { id, zone, members:Set, media:Map(id -> {v,a,s}), requests:Set, rejected:Set }
+const userGroup = new Map();   // id -> gid
+let gidSeq = 0;
+const GROUP_FAR = 4.5;         // 離最近的成員超過這個距離（格）就自動離開小群組
 
 function ctxOf(a, b, prev) {
   const ra = MAP.region(a.x, a.y), rb = MAP.region(b.x, b.y);
@@ -128,8 +134,32 @@ function ctxOf(a, b, prev) {
   if (ra === 'lounge' && rb === 'lounge') return d <= (prev === 'lounge' ? FAR : NEAR) ? 'lounge' : null;
   return null;
 }
+const groupOf = (id) => groups.get(userGroup.get(id)) || null;
+function leaveGroup(id) {
+  const g = groupOf(id);
+  if (!g) return;
+  g.members.delete(id); g.media.delete(id); userGroup.delete(id);
+  if (g.members.size < 2) { for (const m of g.members) userGroup.delete(m); groups.delete(g.id); }
+}
+function makeGroup(a, b, zone, media) {
+  const g = { id: ++gidSeq, zone, members: new Set([a, b]), media: new Map(), requests: new Set(), rejected: new Set() };
+  for (const id of [a, b]) { g.media.set(id, { ...media }); userGroup.set(id, g.id); }
+  groups.set(g.id, g);
+}
+// 成員走出區域、或離其他成員太遠，就自動離開
+function maintainGroups() {
+  for (const g of [...groups.values()]) {
+    for (const id of [...g.members]) {
+      const u = users.get(id);
+      if (!u || MAP.region(u.x, u.y) !== g.zone) { leaveGroup(id); continue; }
+      let nearest = Infinity;
+      for (const o of g.members) if (o !== id) { const v = users.get(o); if (v) nearest = Math.min(nearest, Math.hypot(u.x - v.x, u.y - v.y)); }
+      if (nearest > GROUP_FAR) leaveGroup(id);
+    }
+  }
+}
 
-function recompute() {
+function recompute(depth = 0) {
   const ids = [...users.keys()];
   for (const id of ids) {
     const u = users.get(id);
@@ -137,13 +167,16 @@ function recompute() {
     const t = MAP.tableAt(u.x, u.y);
     if (ts.table !== t) Object.assign(ts, { table: t, cam: false, mic: false, scr: false, camAns: false, micAns: false, scrAns: false });
   }
+  maintainGroups();
+  let formed = false;
   const out = new Map(ids.map((i) => [i, []]));
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = ids[i], b = ids[j];
       const key = pairKey(a, b);
       const prev = linkCtx.get(key);
-      const ctx = ctxOf(users.get(a), users.get(b), prev);
+      const ga = userGroup.get(a), gb = userGroup.get(b);
+      const ctx = ga && ga === gb ? 'group' : ctxOf(users.get(a), users.get(b), prev);
       if (ctx !== prev) pairConsent.delete(key); // 換了情境就重新詢問
       if (ctx) { linkCtx.set(key, ctx); links.add(key); } else { linkCtx.delete(key); links.delete(key); continue; }
       const pc = pairConsent.get(key) || { v: {}, a: {}, s: {} };
@@ -152,16 +185,46 @@ function recompute() {
       const cb = { v: get('v', b), a: get('a', b), s: get('s', b) };
       const both = (k) => ca[k] === true && cb[k] === true;
       let sab, sba; // a 送給 b、b 送給 a 的內容 {v: 視訊, a: 語音, s: 螢幕分享}
-      if (ctx === 'quiet') { sab = { v: both('v'), a: both('a'), s: both('s') }; sba = sab; }
-      else if (ctx === 'lounge') { sab = { v: both('v'), a: true, s: both('s') }; sba = sab; }
-      else {
+      let kinds = [], joinA = null, joinB = null; // kinds：可以一對一詢問的項目；join：可以申請加入對方的小群組
+      if (ctx === 'group') {
+        const g = groups.get(ga), A = g.media.get(a), B = g.media.get(b);
+        const lounge = g.zone === 'lounge';
+        sab = { v: A.v, a: lounge || A.a, s: A.s }; sba = { v: B.v, a: lounge || B.a, s: B.s };
+      } else if (ctx === 'table') {
         const A = tableState.get(a), B = tableState.get(b);
         const scr = A.scr && B.scr; // 討論桌：雙方都開放螢幕分享才互通
         sab = { v: A.cam, a: A.mic, s: scr }; sba = { v: B.cam, a: B.mic, s: scr };
+      } else if (ga || gb) {
+        // 有一方已經在小群組裡：不再一對一詢問，改成「申請加入」
+        sab = { v: false, a: ctx === 'lounge', s: false }; sba = sab;
+        const st = (me, other) => {
+          if (userGroup.get(me)) return null;
+          const g = groupOf(other);
+          return g.requests.has(me) ? 'pending' : g.rejected.has(me) ? null : 'can';
+        };
+        if (gb && !ga) joinA = st(a, b);
+        if (ga && !gb) joinB = st(b, a);
+      } else {
+        kinds = ctx === 'quiet' ? ['v', 'a', 's'] : ['v', 's'];
+        if (ctx === 'quiet') { sab = { v: both('v'), a: both('a'), s: both('s') }; sba = sab; }
+        else { sab = { v: both('v'), a: true, s: both('s') }; sba = sab; }
+        // 有任何一項雙方都同意 → 組成小群組
+        if (both('v') || both('s') || (ctx === 'quiet' && both('a'))) {
+          makeGroup(a, b, ctx, { v: both('v'), a: ctx === 'quiet' ? both('a') : false, s: both('s') });
+          pairConsent.delete(key);
+          formed = true;
+        }
       }
-      out.get(a).push({ id: b, ctx, send: sab, recv: sba, mine: ca, theirs: cb });
-      out.get(b).push({ id: a, ctx, send: sba, recv: sab, mine: cb, theirs: ca });
+      out.get(a).push({ id: b, ctx, send: sab, recv: sba, mine: ca, theirs: cb, kinds, join: joinA });
+      out.get(b).push({ id: a, ctx, send: sba, recv: sab, mine: cb, theirs: ca, kinds, join: joinB });
     }
+  }
+  if (formed && depth < 3) return recompute(depth + 1);
+  // 清掉已經離開範圍的申請
+  for (const g of groups.values()) {
+    const near = (r) => [...g.members].some((m) => ['quiet', 'lounge'].includes(linkCtx.get(pairKey(r, m))));
+    for (const r of [...g.requests]) if (!users.has(r) || userGroup.has(r) || !near(r)) g.requests.delete(r);
+    for (const r of [...g.rejected]) if (!users.has(r) || !near(r)) g.rejected.delete(r);
   }
   for (const id of ids) {
     const ts = tableState.get(id);
@@ -169,12 +232,20 @@ function recompute() {
       id: ts.table, cam: ts.cam, mic: ts.mic, scr: ts.scr, camAns: ts.camAns, micAns: ts.micAns, scrAns: ts.scrAns,
       members: ids.filter((o) => o !== id && tableState.get(o).table === ts.table).map((o) => users.get(o).name),
     } : null;
-    const payload = { peers: out.get(id), table };
+    const g = groupOf(id);
+    const group = g ? {
+      id: g.id, zone: g.zone, media: g.media.get(id),
+      members: [...g.members].filter((o) => o !== id).map((o) => users.get(o).name),
+      requests: [...g.requests].map((r) => ({ id: r, name: users.get(r).name })),
+    } : null;
+    const payload = { peers: out.get(id), table, group };
     const str = JSON.stringify(payload);
     if (sentState.get(id) !== str) { sentState.set(id, str); io.to(id).emit('links', payload); }
   }
 }
 function forget(id) {
+  leaveGroup(id);
+  for (const g of groups.values()) { g.requests.delete(id); g.rejected.delete(id); }
   for (const key of [...linkCtx.keys()]) {
     const [a, b] = key.split('|');
     if (a === id || b === id) { linkCtx.delete(key); links.delete(key); pairConsent.delete(key); }
@@ -279,7 +350,7 @@ io.on('connection', (socket) => {
     if (!m || typeof m.peer !== 'string' || !users.has(socket.id)) return;
     const key = pairKey(socket.id, m.peer);
     const ctx = linkCtx.get(key);
-    if (!ctx || ctx === 'table') return;
+    if (!ctx || ctx === 'table' || ctx === 'group' || userGroup.has(socket.id) || userGroup.has(m.peer)) return;
     const kind = ['v', 'a', 's'].includes(m.kind) ? m.kind : 'v';
     if (ctx === 'lounge' && kind === 'a') return; // 休息區語音本來就是開的
     const pc = pairConsent.get(key) || { v: {}, a: {}, s: {} };
@@ -288,6 +359,36 @@ io.on('connection', (socket) => {
     pairConsent.set(key, pc);
     recompute();
   });
+  // 小群組：申請加入、取消申請、成員同意／拒絕、調整自己的鏡頭麥克風螢幕、離開
+  socket.on('group-join', (m) => {
+    const g = m && groupOf(m.peer);
+    if (!g || !users.has(socket.id) || userGroup.has(socket.id) || g.rejected.has(socket.id)) return;
+    if (!['quiet', 'lounge'].includes(linkCtx.get(pairKey(socket.id, m.peer)))) return;
+    g.requests.add(socket.id);
+    recompute();
+  });
+  socket.on('group-cancel', (m) => {
+    const g = m && groupOf(m.peer);
+    if (g) { g.requests.delete(socket.id); recompute(); }
+  });
+  socket.on('group-answer', (m) => {
+    const g = groupOf(socket.id);
+    if (!g || !m || !g.requests.has(m.id)) return;
+    g.requests.delete(m.id);
+    if (m.ok && users.has(m.id) && !userGroup.has(m.id)) {
+      g.members.add(m.id); g.media.set(m.id, { v: false, a: false, s: false }); userGroup.set(m.id, g.id);
+    } else if (!m.ok) g.rejected.add(m.id);
+    recompute();
+  });
+  socket.on('group-media', (m) => {
+    const g = groupOf(socket.id);
+    if (!g || !m) return;
+    const media = g.media.get(socket.id);
+    for (const k of ['v', 'a', 's']) if (k in m) media[k] = !!m[k];
+    recompute();
+  });
+  socket.on('group-leave', () => { leaveGroup(socket.id); recompute(); });
+
   // 討論桌：鏡頭／麥克風分開選
   socket.on('table-media', (m) => {
     const ts = tableState.get(socket.id);

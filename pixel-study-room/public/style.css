@@ -217,3 +217,12 @@ main.side-closed aside { display: none; }
 #stage.meeting .vtile.main video { object-fit: contain; background: #000; }
 #stage.meeting .vtile.pinned::before { content: "📌 已固定（再點一下取消）"; position: absolute; top: 8px; left: 8px; z-index: 2; font-size: 12px; color: #fff; background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 6px; }
 #stage.meeting #videos:not(.has-main) .vtile:hover::before, #stage.meeting #videos.has-main .vtile:not(.main):hover::before { content: "點一下放大"; position: absolute; top: 8px; left: 8px; z-index: 2; font-size: 12px; color: #fff; background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 6px; }
+
+/* 小群組 */
+.groupcard .req { background: #fdebd0; border-radius: 8px; padding: 3px 6px; animation: ring 1.2s ease-in-out infinite; outline: 2px solid #f0a33a; }
+.groupcard button.leave { margin-top: 4px; background: #fff; color: #8a5a4a; }
+.groupcard .hint { font-size: 12px; }
+.bubble.joinable { outline: 2px dashed #7b6ad9; }
+#flash { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 8; background: rgba(30,27,25,.9); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; pointer-events: none; }
+/* 會議畫面不能移動：手機也不顯示方向鍵 */
+@media (pointer: coarse) { #stage.meeting #dpad { display: none; } }
